@@ -1,0 +1,65 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+
+.venv/
+venv/
+
+# uv: lock 文件应当提交，缓存不提交
+.uv-cache/
+
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+*.db
+*.sqlite
+*.sqlite3
+chroma/
+
+# M2: 运行时数据（DB / 向量库 / 用户 profile）
+# 用 data/* 而非 data/：排除目录内容但允许 ! 白名单个别文件（父目录被排除则 ! 失效）
+data/*
+!data/.gitkeep
+!data/config.toml.example
+# 用户选择把真实运行配置（含活凭据）纳入私有仓库版本管理（2026-07-17）
+!data/config.toml
+!data/config.json
+
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Web 前端
+web/node_modules/
+web/dist/
+web/.env
+web/tsconfig.tsbuildinfo
+
+# Go 构建产物
+nexus-svc/bin/
+
+
+# 运行时缓存
+web/data/
+.gstack/
+.codegraph/
+workspace/
+
+# 运行时产物（日志 / pid，不入库）
+logs/
+run/
+
+# /loop 技能临时笔记
+loop-*.md
+graphify-out/

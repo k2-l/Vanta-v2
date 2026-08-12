@@ -1,0 +1,19 @@
+# 构建上下文排除（三个 Containerfile 都以仓库根为 context）
+# 保留 harness/ web/ 源码；排除产物、数据、运行时挂载目录
+.git
+.claude
+.codegraph
+.ruff_cache
+.pytest_cache
+__pycache__
+*.pyc
+.venv
+logs
+run
+data
+workspace
+docs
+*.md
+web/node_modules
+web/dist
+web/.env
