@@ -54,7 +54,6 @@ _AGENT_LABELS: dict[str, str] = {
     "agent": "分析中",
     "tools": "等待结果中",
     "recovery": "错误恢复中",
-    "summarize": "总结中",
 }
 
 
@@ -201,8 +200,10 @@ class AgentRuntime:
         await db.append_message(session_id, "user", user_message)
 
         # 2. 并行：历史消息 + rolling_summary + profile（三路独立 I/O）
+        # 历史装载走「压缩检查点」感知：有检查点则取其之后的原文（检查点之前的已在 rolling_summary
+        # 里作背景注入）；无检查点（存量会话/从未主动压缩）回退「最近 N 条」，行为与旧版一致。
         history_msgs, prior_rolling_summary, profile = await asyncio.gather(
-            db.recent_messages(session_id, n=s.history_recent_n),
+            db.messages_after_checkpoint(session_id, fallback_n=s.history_recent_n),
             db.get_rolling_summary(session_id),
             asyncio.to_thread(load_profile),
         )
@@ -239,10 +240,6 @@ class AgentRuntime:
             "max_tool_iterations": s.max_tool_iterations,
             "tool_failure_counts": {},
             "entity_dep_context": "",
-<<<<<<< HEAD
-            "active_skill": None,
-=======
->>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
             "error": None,
             "error_type": None,
             "recovery_attempts": 0,
@@ -428,27 +425,6 @@ class AgentRuntime:
                                     )
                                 )
                                 _pending_sub.discard(sid)
-                    elif node_name == "summarize":
-                        # 持久化 rolling_summary，标记阶段完成
-                        new_summary = output.get("rolling_summary", "")
-                        if new_summary:
-                            await db.update_rolling_summary(session_id, new_summary)
-                        yield event_to_sse(
-                            PhaseEvent(
-                                id=_agent_phase_id(),
-                                label="已完成",
-                                status="ok",
-                            )
-                        )
-                        for sid in list(_pending_sub):
-                            yield event_to_sse(
-                                PhaseEvent(
-                                    id=sid,
-                                    label=sid.split(":", 1)[-1],
-                                    status="ok",
-                                )
-                            )
-                            _pending_sub.discard(sid)
 
                 # ── LLM 完整回复 — 检测 tool_call + 发射流式未覆盖文本 ──
                 if ev_name == "on_chat_model_end":

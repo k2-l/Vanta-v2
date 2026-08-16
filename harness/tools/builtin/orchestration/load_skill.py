@@ -7,10 +7,6 @@ L2 加载内容：
 """
 from __future__ import annotations
 
-<<<<<<< HEAD
-import json
-=======
->>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
 import re
 from typing import Any
 
@@ -27,11 +23,7 @@ def _parse_sections(content: str) -> dict[str, str]:
         if line.startswith("## "):
             if current_lines:
                 sections[current_title] = "\n".join(current_lines).strip()
-<<<<<<< HEAD
-            current_title = line.strip("## #").strip()
-=======
             current_title = line.strip("# ").strip()
->>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
             current_lines = []
         else:
             current_lines.append(line)
@@ -75,11 +67,7 @@ def _build_l2_block(
     tools = list(allowed_tools)
     if not tools:
         tools.append("（无预设工具限制）")
-<<<<<<< HEAD
-    lines.append(f"### 推荐工具\n- " + "\n- ".join(tools))
-=======
     lines.append("### 推荐工具\n- " + "\n- ".join(tools))
->>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
 
     # 依赖知识库
     kb_deps = [d["dep_name"] for d in dependencies if d.get("dep_kind") == "inrepository"]
@@ -112,14 +100,8 @@ class LoadSkillTool(Tool):
     name = "Skill"
     category = "skill"
     description = (
-<<<<<<< HEAD
-        "加载一个**已启动的 Skill** 的完整内容（L2 层：SOP + 推荐工具 + 执行顺序）。"
-        "当你判断当前任务符合某个 Skill 的用途时调用，获取详细指令后再执行。"
-        "只能加载已启动（active=true）的 Skill。"
-=======
         "加载一个 Skill 的完整内容（L2 层：SOP + 推荐工具 + 执行顺序）。"
         "当你判断当前任务符合某个 Skill 的用途时调用，获取详细指令后再执行。"
->>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
     )
     input_schema: dict[str, Any] = {
         "type": "object",
@@ -133,59 +115,6 @@ class LoadSkillTool(Tool):
     }
 
     async def run(self, name: str) -> ToolResult:
-<<<<<<< HEAD
-        from harness.infra.db import EntityDependency, SkillRecord, session_factory
-        from sqlalchemy import select
-
-        try:
-            async with session_factory()() as db:
-                rec = (
-                    await db.execute(
-                        select(SkillRecord).where(
-                            SkillRecord.name == name,
-                            SkillRecord.active == True,  # noqa: E712
-                        )
-                    )
-                ).scalar_one_or_none()
-
-                if rec is None:
-                    return ToolResult(
-                        ok=False,
-                        output="",
-                        error=f"Skill '{name}' 不存在或未启动",
-                    )
-
-                # 加载依赖知识库（用于工具推荐）
-                dep_rows = (
-                    await db.execute(
-                        select(EntityDependency)
-                        .where(
-                            EntityDependency.source_name == name,
-                            EntityDependency.source_type == "skill",
-                        )
-                    )
-                ).scalars().all()
-
-            allowed_tools = json.loads(rec.allowed_tools) if rec.allowed_tools else []
-            deps = [
-                {"dep_kind": d.dep_kind, "dep_name": d.dep_name}
-                for d in dep_rows
-            ]
-
-            output = _build_l2_block(
-                name=rec.name,
-                description=rec.description,
-                content=rec.content,
-                allowed_tools=allowed_tools,
-                dependencies=deps,
-                argument_hint=rec.argument_hint or "",
-            )
-            return ToolResult(ok=True, output=output)
-
-        except Exception as exc:  # noqa: BLE001
-            return ToolResult(ok=False, output="", error=str(exc))
-
-=======
         from harness.providers import get_provider
 
         try:
@@ -211,7 +140,6 @@ class LoadSkillTool(Tool):
             )
         return ToolResult(ok=True, output=output)
 
->>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
 
 def _build_agent_l2_block(
     name: str,
@@ -250,14 +178,8 @@ class LoadAgentTool(Tool):
     name = "load_agent"
     category = "agent"
     description = (
-<<<<<<< HEAD
-        "加载一个**已启动的 Agent** 的完整 system prompt（L2 层）。"
-        "当你需要以特定 Agent 的角色/专业能力执行任务时调用。"
-        "只能加载已启动（active=true）的 Agent。"
-=======
         "加载一个 Agent 的完整 system prompt（L2 层）。"
         "当你需要以特定 Agent 的角色/专业能力执行任务时调用。"
->>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
     )
     input_schema: dict[str, Any] = {
         "type": "object",
@@ -271,42 +193,6 @@ class LoadAgentTool(Tool):
     }
 
     async def run(self, name: str) -> ToolResult:
-<<<<<<< HEAD
-        from harness.infra.db import AgentRecord, session_factory
-        from sqlalchemy import select
-
-        try:
-            async with session_factory()() as db:
-                rec = (
-                    await db.execute(
-                        select(AgentRecord).where(
-                            AgentRecord.name == name,
-                            AgentRecord.active == True,  # noqa: E712
-                        )
-                    )
-                ).scalar_one_or_none()
-
-                if rec is None:
-                    return ToolResult(
-                        ok=False,
-                        output="",
-                        error=f"Agent '{name}' 不存在或未启动",
-                    )
-
-            tools = json.loads(rec.tools) if rec.tools else []
-            triggers = json.loads(rec.triggers) if rec.triggers else []
-            output = _build_agent_l2_block(
-                name=rec.name,
-                description=rec.description,
-                triggers=triggers,
-                argument_hint=rec.argument_hint or "",
-                tools=tools,
-            )
-            return ToolResult(ok=True, output=output)
-
-        except Exception as exc:  # noqa: BLE001
-            return ToolResult(ok=False, output="", error=str(exc))
-=======
         from harness.providers import get_provider
 
         try:
@@ -325,4 +211,3 @@ class LoadAgentTool(Tool):
             tools=full.tools,
         )
         return ToolResult(ok=True, output=output)
->>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)

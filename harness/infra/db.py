@@ -55,6 +55,11 @@ class Session(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     title: Mapped[str] = mapped_column(String(200), default="新会话")
     rolling_summary: Mapped[str] = mapped_column(Text, default="")
+    # 压缩检查点：此时间点之前的消息已被压进 rolling_summary，runtime 从此点之后取原文喂模型。
+    # NULL = 从未主动压缩（历史装载走原有「最近 N 条」逻辑）。原文一律保留，可回退。
+    compacted_upto: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
     active_engagement_id: Mapped[str] = mapped_column(String(32), default="")  # 当前会话激活的 engagement（scope 门）
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
@@ -280,6 +285,7 @@ async def init_db() -> None:
     for col_sql in [
         "ALTER TABLE agents ADD COLUMN enable_critic BOOLEAN DEFAULT FALSE",
         "ALTER TABLE sessions ADD COLUMN active_engagement_id VARCHAR(32) DEFAULT ''",
+        "ALTER TABLE sessions ADD COLUMN compacted_upto TIMESTAMPTZ",
         # 看板泛化（BLACKBOARD P1）：给 security_findings 补 artifact 通用列
         "ALTER TABLE security_findings ADD COLUMN producer VARCHAR(200) DEFAULT ''",
         "ALTER TABLE security_findings ADD COLUMN kind VARCHAR(32) DEFAULT 'finding'",
@@ -482,6 +488,84 @@ async def update_rolling_summary(session_id: str, summary: str) -> None:
             .values(rolling_summary=summary)
         )
         await db.commit()
+
+
+# ─── 主动压缩（压缩检查点）─────────────────────────────────────────────
+
+
+async def get_compaction(session_id: str) -> tuple[str, datetime | None]:
+    """读取会话的 (rolling_summary, compacted_upto)。一次 SELECT 取两列。"""
+    sf = session_factory()
+    async with sf() as db:
+        result = await db.execute(
+            select(Session.rolling_summary, Session.compacted_upto).where(
+                Session.id == session_id
+            )
+        )
+        row = result.one_or_none()
+        if row is None:
+            return "", None
+        return (row[0] or ""), row[1]
+
+
+async def set_compaction(session_id: str, summary: str, upto: datetime) -> None:
+    """用户主动压缩落库：同时写 rolling_summary + compacted_upto（检查点）。
+
+    只动这两列、不触碰 messages（原文全保留），故与正在运行的轮无数据竞争：
+    最坏只影响下一轮的上下文装载。
+    """
+    sf = session_factory()
+    async with sf() as db:
+        await db.execute(
+            update(Session)
+            .where(Session.id == session_id)
+            .values(rolling_summary=summary, compacted_upto=upto)
+        )
+        await db.commit()
+
+
+async def messages_upto(session_id: str, upto: datetime | None = None) -> list[Message]:
+    """取「压缩源」原文：created_at <= upto 的消息按时间正序；upto=None 取全部。
+
+    供主动压缩预览时把检查点之前的原文喂给压缩器（服务层再按 token 上限截断）。
+    """
+    sf = session_factory()
+    async with sf() as db:
+        stmt = select(Message).where(Message.session_id == session_id)
+        if upto is not None:
+            stmt = stmt.where(Message.created_at <= upto)
+        stmt = stmt.order_by(Message.created_at.asc())
+        result = await db.execute(stmt)
+        return list(result.scalars().all())
+
+
+async def messages_after_checkpoint(session_id: str, fallback_n: int = 16) -> list[Message]:
+    """runtime 装历史用：有压缩检查点则取其之后的原文（正序）；无则回退「最近 fallback_n 条」。
+
+    NULL 检查点（存量会话/从未压缩）行为与原 recent_messages 完全一致。
+    """
+    summary_upto = None
+    sf = session_factory()
+    async with sf() as db:
+        cp = await db.execute(select(Session.compacted_upto).where(Session.id == session_id))
+        summary_upto = cp.scalar()
+        if summary_upto is None:
+            # 回退：最近 fallback_n 条（复用 recent_messages 语义，避免重复 SQL）
+            result = await db.execute(
+                select(Message)
+                .where(Message.session_id == session_id)
+                .order_by(Message.created_at.desc())
+                .limit(fallback_n)
+            )
+            rows = list(result.scalars().all())
+            rows.reverse()
+            return rows
+        result = await db.execute(
+            select(Message)
+            .where(Message.session_id == session_id, Message.created_at > summary_upto)
+            .order_by(Message.created_at.asc())
+        )
+        return list(result.scalars().all())
 
 
 async def upsert_phase(phase_id: str, session_id: str, payload: dict) -> None:

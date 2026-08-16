@@ -25,6 +25,14 @@ export type Message = {
   created_at: string;
 };
 
+export type CompressPreview = {
+  summary: string;      // 生成的结构化摘要（可编辑后再提交）
+  upto: string;         // 压缩检查点（ISO 时间）；提交时原样回传
+  messages: number;     // 被压缩的原文条数
+  tokens_before: number;
+  tokens_after: number;
+};
+
 export type MemoryItem = {
   id: string;
   text: string;
@@ -92,6 +100,16 @@ export const api = {
     http<Session>(`/sessions/${sessionId}`, {
       method: "PATCH",
       body: JSON.stringify({ title }),
+    }),
+
+  // ---- 主动压缩上下文（压缩检查点）----
+  compressPreview: (sessionId: string) =>
+    http<CompressPreview>(`/sessions/${sessionId}/compress/preview`, { method: "POST" }),
+
+  compressCommit: (sessionId: string, summary: string, upto: string) =>
+    http<void>(`/sessions/${sessionId}/compress/commit`, {
+      method: "POST",
+      body: JSON.stringify({ summary, upto }),
     }),
 
   // ---- approvals (HITL, item 6) ----

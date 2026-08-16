@@ -3,6 +3,7 @@ import { useChat } from "@/store/chat";
 import { useSend } from "../useSend";
 import { api, type BudgetStatus } from "@/shared/lib/api";
 import { EnvSelector } from "./EnvSelector";
+import { CompressModal } from "./CompressModal";
 
 function fmt(n: number): string {
   return n >= 1000 ? (n / 1000).toFixed(1) + "K" : String(n);
@@ -18,6 +19,7 @@ export function ChatInput() {
   const usage = useChat((s) => s.turn.usage);
   const sendMsg = useSend();
   const [budget, setBudget] = useState<BudgetStatus | null>(null);
+  const [showCompress, setShowCompress] = useState(false);
 
   // 每次 turn 结束后拉取一次 budget 数据
   useEffect(() => {
@@ -180,6 +182,28 @@ export function ChatInput() {
             </div>
             <span style={{ fontSize: 10, color: "#6B7280" }}>{fmt(contextUsed)}</span>
           </div>
+          {/* 主动压缩：上下文偏高时高亮为「建议压缩」 */}
+          <button
+            onClick={() => setShowCompress(true)}
+            disabled={!currentId || inFlight}
+            title="把当前对话压成摘要作背景，原文保留可回退"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              padding: "4px 10px",
+              borderRadius: 8,
+              fontSize: 11,
+              fontFamily: "inherit",
+              cursor: currentId && !inFlight ? "pointer" : "default",
+              opacity: currentId && !inFlight ? 1 : 0.4,
+              border: ctxPct >= 80 ? "1px solid #F59E0B66" : "1px solid #E2E5EA",
+              background: ctxPct >= 80 ? "#F59E0B14" : "#FFFFFF",
+              color: ctxPct >= 80 ? "#B45309" : "#6B7280",
+            }}
+          >
+            ⇲ {ctxPct >= 80 ? "建议压缩" : "压缩"}
+          </button>
           {/* 会话配额 */}
           {budget && (
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -199,6 +223,10 @@ export function ChatInput() {
           )}
         </div>
       </div>
+
+      {showCompress && currentId && (
+        <CompressModal sessionId={currentId} onClose={() => setShowCompress(false)} />
+      )}
     </div>
   );
 }

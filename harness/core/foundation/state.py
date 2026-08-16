@@ -90,12 +90,6 @@ class PenAgentState(BaseAgentState):
     # ── 实体依赖上下文（由 preprocess 填充，注入 system prompt）───
     entity_dep_context: str
 
-<<<<<<< HEAD
-    # ── 会话内激活技能（preprocess 路由结果，多轮复用）───────────
-    active_skill: str | None  # 已选定的 skill 名；None 表示需要重新路由
-
-=======
->>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
     tool_failure_counts: dict[str, int]  # 各工具累计失败次数（整轮会话持续累积）
 
 

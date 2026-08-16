@@ -388,15 +388,18 @@ class Settings(BaseSettings):
     session_token_limit: int = 1_000_000    # tokens / 会话
     daily_token_limit: int = 10_000_000     # tokens / 天（全局）
 
-    # 上下文压缩（Context Compression）
-    # 当累计 token 数达到模型上下文窗口的 ratio 比例时，用 model_low 压缩旧消息
-    context_compression_enabled: bool = True   # 主开关
+    # 上下文压缩（Context Compression）—— 已改为「用户主动触发」，不再自动进流程。
+    # context_compression_enabled 不再驱动任何自动路由（保留字段仅为配置兼容/前端读取）；
+    # threshold 现用作前端「建议压缩」的软提示阈值（越过时提示用户，可手动压缩）。
+    context_compression_enabled: bool = True   # 【已弃用于自动路由】保留兼容
     model_context_window: int = 200_000        # 模型上下文窗口大小（tokens）
-    context_compression_ratio: float = 0.80   # 触发阈值比例（默认 80%）
+    context_compression_ratio: float = 0.80   # 「建议压缩」软提示阈值比例（默认 80%）
+    # 主动压缩：喂给压缩器的原文 token 上限；超出部分由已有摘要覆盖（从原文整体重生成）
+    compaction_input_max_tokens: int = 120_000
 
     @property
     def context_compression_threshold(self) -> int:
-        """触发上下文压缩的 token 数阈值（= window × ratio）。"""
+        """「建议压缩」软提示的 token 阈值（= window × ratio）。前端据此提示用户可手动压缩。"""
         return int(self.model_context_window * self.context_compression_ratio)
 
     # 全局并发：同时运行的 session 上限（防止 DB/API 被打爆）

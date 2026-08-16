@@ -4,8 +4,9 @@
   START → preprocess → [budget耗尽 → END]
                      → agent → [tools → agent]* → END
                              → [recovery → agent]* → END
-                             → summarize → [token仍超限 → END]
-                                         → agent → ...
+
+上下文压缩（Rolling Summary）已从自动流程移除，改为用户主动触发
+（见 harness/routes/sessions.py 的 compress 接口 + core/context/summarize.py）。
 """
 
 from __future__ import annotations
@@ -17,14 +18,12 @@ from harness.core.graph.nodes import (
     agent_node,
     preprocess_node,
     recovery_node,
-    summarize_node,
     tool_node,
 )
 from harness.core.graph.routes import (
     route_after_agent,
     route_after_preprocess,
     route_after_recovery,
-    route_after_summarize,
 )
 
 # ─── 构建图 ───────────────────────────────────────────────────────────
@@ -37,7 +36,6 @@ def build_graph() -> StateGraph:
     workflow.add_node("agent", agent_node)
     workflow.add_node("tools", tool_node)
     workflow.add_node("recovery", recovery_node)
-    workflow.add_node("summarize", summarize_node)
 
     workflow.add_edge(START, "preprocess")
     workflow.add_edge("tools", "agent")
@@ -45,7 +43,6 @@ def build_graph() -> StateGraph:
     workflow.add_conditional_edges("preprocess", route_after_preprocess)
     workflow.add_conditional_edges("agent", route_after_agent)
     workflow.add_conditional_edges("recovery", route_after_recovery)
-    workflow.add_conditional_edges("summarize", route_after_summarize)
 
     return workflow
 

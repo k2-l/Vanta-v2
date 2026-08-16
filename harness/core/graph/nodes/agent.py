@@ -104,11 +104,7 @@ def _build_system_blocks(state: PenAgentState, *, cache: bool) -> list[dict[str,
     if state.get("recalled_memories"):
         stable.append(f"\n# 相关历史记忆\n{state['recalled_memories']}")
     if state.get("skill_context"):
-<<<<<<< HEAD
-        stable.append(f"\n# 当前激活技能\n{state['skill_context']}")
-=======
         stable.append(f"\n{state['skill_context']}")
->>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
     if state.get("entity_dep_context"):
         stable.append(f"\n# 实体依赖\n{state['entity_dep_context']}")
 

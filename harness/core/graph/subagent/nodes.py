@@ -17,11 +17,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
-<<<<<<< HEAD
-from harness.agents.loader import AgentContent
-=======
 from harness.contracts.models import AgentFull
->>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
 from harness.core.context.budget import record_usage
 from harness.core.context.summarize import _extract_text
 from harness.core.foundation.errors import (
@@ -66,11 +62,7 @@ _SUB_TOOL_SEARCH_HINT = (
 )
 
 
-<<<<<<< HEAD
-def _build_agent_node(agent: AgentContent, depth: int):
-=======
 def _build_agent_node(agent: AgentFull, depth: int):
->>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
     """返回绑定了特定 agent 配置的 agent_node。
 
     depth：当前子 agent 所处深度（1 或 2）。
@@ -87,11 +79,7 @@ def _build_agent_node(agent: AgentFull, depth: int):
         model_name,
         s.anthropic_api_key,
         s.anthropic_base_url,
-<<<<<<< HEAD
-        agent.max_tokens,
-=======
         s.max_tokens_per_turn,
->>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
     )
 
     allowed_names = set(agent.tools) if agent.tools else None
@@ -130,11 +118,7 @@ def _build_agent_node(agent: AgentFull, depth: int):
         return _bound_by_disclosed[key]
 
     async def agent_node(state: SubAgentState, config: RunnableConfig) -> dict:
-<<<<<<< HEAD
-        content = agent.content or f"你是{agent.name}，专业 AI 助手。"
-=======
         content = agent.content or f"你是{agent.meta.name}，专业 AI 助手。"
->>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
         # 全量模式且存在可披露 dynamic 工具时，追加 tool_search 使用说明。
         if fixed_bound is None and registry.dynamic_specs():
             content = content + _SUB_TOOL_SEARCH_HINT
@@ -154,11 +138,7 @@ def _build_agent_node(agent: AgentFull, depth: int):
             await record_usage(state.get("session_id", "_anon"), model_name, in_t, out_t)
             log.info(
                 "sub_agent.llm_ok",
-<<<<<<< HEAD
-                agent=agent.name,
-=======
                 agent=agent.meta.name,
->>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
                 tool_calls=len(response.tool_calls or []),
                 in_t=in_t,
                 out_t=out_t,
@@ -168,11 +148,7 @@ def _build_agent_node(agent: AgentFull, depth: int):
             return {"messages": [response], "error": None, "error_type": None}
         except Exception as exc:  # noqa: BLE001
             err = str(exc)
-<<<<<<< HEAD
-            log.warning("sub_agent.llm_error", agent=agent.name, exc=err[:200])
-=======
             log.warning("sub_agent.llm_error", agent=agent.meta.name, exc=err[:200])
->>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
             _inc("sub_agent.llm_errors")
             return {"error": err, "error_type": classify_error(err)}
 

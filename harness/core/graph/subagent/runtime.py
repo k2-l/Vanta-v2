@@ -8,11 +8,7 @@ from __future__ import annotations
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-<<<<<<< HEAD
-from harness.agents.loader import AgentContent
-=======
 from harness.contracts.models import AgentFull
->>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
 from harness.core.context.summarize import _extract_text
 from harness.core.foundation.state import SubAgentState
 from harness.infra.settings import get_settings
@@ -24,11 +20,7 @@ from .context import get_parent_event_queue
 
 async def run_sub_agent(
     *,
-<<<<<<< HEAD
-    agent: AgentContent,
-=======
     agent: AgentFull,
->>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
     task: str,
     context: str,
     depth: int,
@@ -59,11 +51,7 @@ async def run_sub_agent(
     initial_state: SubAgentState = {
         "messages": [HumanMessage(content=user_content)],
         "session_id": session_id,
-<<<<<<< HEAD
-        "agent_name": agent.name,
-=======
         "agent_name": agent.meta.name,
->>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
         "agent_depth": depth,
         "tool_logs": [],
         "tool_iterations": 0,
@@ -96,11 +84,7 @@ async def run_sub_agent(
                 "on_tool_start",
                 "on_tool_end",
             ):
-<<<<<<< HEAD
-                await queue.put({"sub_agent": agent.name, "event": ev})
-=======
                 await queue.put({"sub_agent": agent.meta.name, "event": ev})
->>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
 
         # 从 LangGraph on_chain_end 事件捕获最终状态
         if ev.get("event") == "on_chain_end" and ev.get("name") == "LangGraph":

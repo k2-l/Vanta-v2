@@ -26,31 +26,22 @@ _ROUTE_TABLE: dict[str, dict[str, str]] = {
         "BUDGET_": END,  # startswith 检查，见 _route 实现
         "__default__": "agent",
     },
-    # error_type == "CONTEXT_TOO_LONG" → END，否则 → "agent"
-    "summarize": {
-        "CONTEXT_TOO_LONG": END,
-        "__default__": "agent",
-    },
 }
 
 
 def _route(router_key: str, state: PenAgentState) -> str:
-    """通用路由查表函数（仅供 preprocess / summarize 两个简单路由使用）。
+    """通用路由查表函数（当前仅 preprocess 使用）。
 
     - preprocess：检查 error_type 是否以 "BUDGET_" 开头
-    - summarize：检查 error_type 是否精确等于 "CONTEXT_TOO_LONG"
     """
     table = _ROUTE_TABLE[router_key]
     error_type = state.get("error_type") or ""
 
-    if router_key == "preprocess":
-        matched = "__default__"
-        for key in table:
-            if key != "__default__" and error_type.startswith(key):
-                matched = key
-                break
-    else:
-        matched = error_type if error_type in table else "__default__"
+    matched = "__default__"
+    for key in table:
+        if key != "__default__" and error_type.startswith(key):
+            matched = key
+            break
 
     return table[matched]
 
@@ -59,25 +50,19 @@ def _route(router_key: str, state: PenAgentState) -> str:
 
 
 def route_after_agent(state: PenAgentState) -> str:
-    """agent 节点后的分支判断。优先级：错误 > token超阈值 > 工具循环 > 有工具调用 > 完成"""
+    """agent 节点后的分支判断。优先级：错误 > 工具循环 > 有工具调用 > 完成
+
+    上下文压缩已移出自动流程（改为用户主动触发），此处不再有 token 超阈值 → summarize 分支。
+    """
     # 1. 有错误 → 无条件交给 recovery；是否还有次数由 recovery 节点自己决定
     if state.get("error"):
         _inc("route.agent.recovery")
         return "recovery"
 
-    # 2. token 超过压缩阈值 → 先压缩再继续（需开关已开启）
-    s = get_settings()
-    if (
-        s.context_compression_enabled
-        and state.get("token_count", 0) >= s.context_compression_threshold
-    ):
-        _inc("route.agent.summarize")
-        return "summarize"
-
     messages = state.get("messages", [])
     last = messages[-1] if messages else None
 
-    # 3. 有 tool_call → 工具循环检测（超限 → recovery 打断循环）
+    # 2. 有 tool_call → 工具循环检测（超限 → recovery 打断循环）
     if isinstance(last, AIMessage) and last.tool_calls:
         iterations = state.get("tool_iterations", 0)
         max_iter = state.get("max_tool_iterations", 20)
@@ -98,27 +83,6 @@ def route_after_preprocess(state: PenAgentState) -> str:
         _inc("route.preprocess.budget_exceeded")
     else:
         _inc("route.preprocess.ok")
-    return dest
-
-
-def route_after_summarize(state: PenAgentState) -> str:
-    """summarize 后：若 token 仍超限则终止，避免 agent↔summarize 死循环。
-
-    若压缩后末条仍是带 tool_calls 的 AIMessage（token 阈值在 route_after_agent 里
-    抢先于 tools 分支触发了 summarize），必须先去 tools 执行这些 tool_call——否则把
-    未配对 tool_result 的 tool_use 直接丢回 agent，下一次 LLM 调用会因 dangling
-    tool_use 触发 Anthropic 400。压缩已完成，执行完工具后照常 tools→agent。
-    """
-    dest = _route("summarize", state)
-    if dest == END:
-        _inc("route.summarize.context_too_long")
-        return END
-    messages = state.get("messages", [])
-    last = messages[-1] if messages else None
-    if isinstance(last, AIMessage) and last.tool_calls:
-        _inc("route.summarize.pending_tools")
-        return "tools"
-    _inc("route.summarize.ok")
     return dest
 
 

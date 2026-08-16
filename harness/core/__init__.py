@@ -6,10 +6,6 @@
     AgentRuntime                                    —— 对话运行时入口（routes.chat）
     run_sub_agent                                   —— 派发子 agent 执行（Agent 工具）
     current_sub_agent_depth / enter_sub_agent_depth —— 子 agent 递归深度（Agent 工具）
-<<<<<<< HEAD
-    load_agent_content                              —— 加载单个 Agent 定义（Agent 工具）
-=======
->>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
     clear_model_caches                              —— 配置变更后清模型缓存（infra.config_store）
 
 域内 API 仍从各包导入：foundation / context / graph + capabilities（skills·agents·memory·services）。
@@ -25,10 +21,6 @@ __all__ = [
     "clear_model_caches",
     "current_sub_agent_depth",
     "enter_sub_agent_depth",
-<<<<<<< HEAD
-    "load_agent_content",
-=======
->>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
     "run_sub_agent",
 ]
 
@@ -38,18 +30,10 @@ _PUBLIC: dict[str, tuple[str, str]] = {
     "run_sub_agent": ("harness.core.graph.subagent", "run_sub_agent"),
     "current_sub_agent_depth": ("harness.core.graph.subagent", "current_sub_agent_depth"),
     "enter_sub_agent_depth": ("harness.core.graph.subagent", "enter_sub_agent_depth"),
-<<<<<<< HEAD
-    "load_agent_content": ("harness.agents.loader", "load_agent_content"),
-=======
->>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
     "clear_model_caches": ("harness.core.graph.models", "clear_model_caches"),
 }
 
 if TYPE_CHECKING:  # 仅供类型检查器解析，运行时走 __getattr__
-<<<<<<< HEAD
-    from harness.agents.loader import load_agent_content
-=======
->>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
     from harness.core.graph.models import clear_model_caches
     from harness.core.graph.subagent import (
         current_sub_agent_depth,
