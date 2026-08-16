@@ -2,7 +2,11 @@
 
 使用场景：
   主代理调用 run_agent("代码审计专家", "审计 /src 目录", context="") 时，
+<<<<<<< HEAD
   系统加载对应 AgentRecord，在独立执行上下文中运行子 agent 图，
+=======
+  系统通过 Provider 加载对应 Agent 定义，在独立执行上下文中运行子 agent 图，
+>>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
   把最终回复文本作为工具结果返回给主代理。
 
 串行 / 并行由主代理的 LLM 自然控制：
@@ -58,7 +62,11 @@ class RunAgentTool(Tool):
         task: str,
         context: str = "",
     ) -> ToolResult:
+<<<<<<< HEAD
         from harness.agents.loader import load_agent_content
+=======
+        from harness.agents.loader import load_agent
+>>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
         from harness.infra.settings import get_settings
 
         s = get_settings()
@@ -72,9 +80,15 @@ class RunAgentTool(Tool):
                 error_code="DEPTH_LIMIT",
             )
 
+<<<<<<< HEAD
         # ── 加载 Agent 定义（单一来源，active_only 保持只派发已启动 Agent）──
         try:
             agent = await load_agent_content(name, active_only=True)
+=======
+        # ── 加载 Agent 定义（统一协议：load_agent → EntityProvider.get，直接消费 AgentFull）──
+        try:
+            agent = load_agent(name)
+>>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
         except Exception as exc:  # noqa: BLE001
             return ToolResult.fail(
                 error=f"加载 Agent '{name}' 时出错：{exc}",
@@ -82,7 +96,11 @@ class RunAgentTool(Tool):
             )
         if agent is None:
             return ToolResult.fail(
+<<<<<<< HEAD
                 error=f"Agent '{name}' 不存在或未启动",
+=======
+                error=f"Agent '{name}' 不存在",
+>>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
                 error_code="AGENT_NOT_FOUND",
             )
 

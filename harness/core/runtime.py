@@ -239,7 +239,10 @@ class AgentRuntime:
             "max_tool_iterations": s.max_tool_iterations,
             "tool_failure_counts": {},
             "entity_dep_context": "",
+<<<<<<< HEAD
             "active_skill": None,
+=======
+>>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
             "error": None,
             "error_type": None,
             "recovery_attempts": 0,

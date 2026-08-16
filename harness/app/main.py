@@ -29,7 +29,10 @@ from harness.routes import (
     memories,
     sessions,
     skills,
+<<<<<<< HEAD
     workspace,
+=======
+>>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
     ws,
 )
 
@@ -179,7 +182,10 @@ def create_app() -> FastAPI:
     app.include_router(agents.router)
     app.include_router(knowledge.router)
     app.include_router(containers.router)
+<<<<<<< HEAD
     app.include_router(workspace.router)
+=======
+>>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
 
     # 结果看板只读查询（BLACKBOARD P1；操作者视角跨 engagement，secret 不回明文）
     app.include_router(board.router)

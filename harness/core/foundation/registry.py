@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+<<<<<<< HEAD
 import json
 from abc import ABC, abstractmethod
 from collections import OrderedDict
@@ -39,6 +40,11 @@ class BaseRegistry(ABC):
     def as_prompt_block(self, name_filter: set[str] | None = None) -> str: ...
 
 
+=======
+from collections import OrderedDict
+
+
+>>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
 class LRUDict(OrderedDict):
     """OrderedDict with a maximum size that evicts the least-recently-used entry on overflow.
 
@@ -56,6 +62,7 @@ class LRUDict(OrderedDict):
         super().__setitem__(key, value)
         if len(self) > self._maxsize:
             self.popitem(last=False)  # evict LRU entry
+<<<<<<< HEAD
 
 
 def _compact(text: str) -> str:
@@ -82,3 +89,5 @@ def _parse_keywords(triggers_raw: str) -> list[str]:
         return [str(triggers_raw).strip()]
     except (json.JSONDecodeError, ValueError):
         return []
+=======
+>>>>>>> ce7fc48 (Agents/Skills的L1～L3重构完成（统一协议调度+文件驱动）)
