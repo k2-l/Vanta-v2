@@ -274,6 +274,10 @@ class Settings(BaseSettings):
     # 每项 dict：{name, command, args?: list, env?: dict, enabled?: bool}
     mcp_servers: list[dict] = []
 
+    # 插件工具来源（见 harness/tools/sources/plugin）：plugins_dir 下每个包暴露 get_tools()
+    plugins_enabled: bool = False
+    plugins_dir: str = "plugins"
+
     # 权限引擎（见 harness/infra/permissions）：mode + allow/ask/deny 规则（叠加在默认规则上）
     permission_mode: str = "default"   # default | acceptEdits | plan | bypass
     permission_allow: list[str] = []
@@ -364,8 +368,8 @@ class Settings(BaseSettings):
     # 单次 LLM 响应最大 token 数
     max_tokens_per_turn: int = 4096
 
-    # 单次 LLM 响应最多执行的工具数（防 LLM 批量生成过多 tool_call）
-    max_tool_calls_per_turn: int = 10
+    # 单次 LLM 响应最多执行的工具数（0 = 不限，由 token 预算兜底；仍受 tool_concurrency 并发约束）
+    max_tool_calls_per_turn: int = 0
 
     # 单工具执行超时（秒）
     tool_timeout_seconds: int = 60
@@ -405,18 +409,18 @@ class Settings(BaseSettings):
     # 全局并发：同时运行的 session 上限（防止 DB/API 被打爆）
     max_concurrent_sessions: int = 20
 
-    # LangGraph 图递归深度上限（agent↔tools 循环计数）
-    # 须满足：> 3 + 2*(max_tool_iterations + max_recovery_attempts) + 安全余量
-    # _validate_graph_depth 在启动时自动校验该约束
-    graph_recursion_limit: int = 100
+    # LangGraph 图递归深度硬上限（安全网）。max_tool_iterations=0（不限）时即循环硬天花板，
+    # token 预算为主兜底；>0 时须 > 3 + 2*(max_tool_iterations + max_recovery_attempts) + 余量。
+    # _validate_graph_depth 启动时校验；溢出由 runtime 优雅收尾。
+    graph_recursion_limit: int = 500
 
     # Rolling Summary：每次压缩保留最近 N 条消息
     summarize_keep_recent: int = 6
     # Rolling Summary 单次摘要调用的最大输出 token 数
     summarize_max_tokens: int = 1024
 
-    # 工具循环检测：agent→tools→agent 最多迭代次数
-    max_tool_iterations: int = 20
+    # 工具循环检测：agent→tools→agent 最多迭代次数（0 = 不限，由 token 预算 + graph_recursion_limit 兜底）
+    max_tool_iterations: int = 0
 
     # 单个工具累计失败上限（达到后在 ToolMessage 中提示 LLM 换用其他工具）
     tool_failure_max_retries: int = 3

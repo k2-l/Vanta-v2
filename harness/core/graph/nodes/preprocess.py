@@ -18,7 +18,7 @@ from harness.core.context.budget import BudgetExceeded, check_budget
 from harness.core.context.builder import load_and_build as _load_l1
 from harness.core.context.builder import load_dep_context as _load_deps
 from harness.core.foundation.state import PenAgentState
-from harness.core.foundation.tokens import count_messages_tokens, count_tokens
+from harness.core.foundation.tokens import estimate_messages_tokens, estimate_tokens
 from harness.infra.logging import log
 from harness.infra.settings import get_settings
 
@@ -80,8 +80,13 @@ async def preprocess_node(state: PenAgentState, config: RunnableConfig) -> dict:
         log.debug("preprocess.budget_ok", session_used=session_used, daily_used=daily_used)
     except BudgetExceeded as e:
         log.warning("preprocess.budget_exceeded", kind=e.kind, used=e.used, limit=e.limit)
+        _scope = "本次会话" if e.kind == "SESSION" else "今日全局"
+        _tail = "请开启新会话继续。" if e.kind == "SESSION" else "请稍后再试或调整每日额度。"
         budget_msg = AIMessage(
-            content=f"任务已停止：本次会话的工具调用预算已耗尽（已用 {e.used} 次，上限 {e.limit} 次）。请开启新会话继续。"
+            content=(
+                f"任务已停止：{_scope} token 预算已耗尽"
+                f"（已用 {e.used:,} / 上限 {e.limit:,} tokens）。{_tail}"
+            )
         )
         return {
             "messages": [budget_msg],
@@ -118,14 +123,14 @@ async def preprocess_node(state: PenAgentState, config: RunnableConfig) -> dict:
             _load_dep_context(),
         )
 
-    # ── Token 计数 ────────────────────────────────────────────────────
-    token_count = count_messages_tokens(_msgs)
+    # Token 估算：廉价 len//4 代替全量 tiktoken，仅供观测/日志，不参与控制流。
+    token_count = estimate_messages_tokens(_msgs)
     token_count += (
-        count_tokens(state.get("rolling_summary", "") or "")
-        + count_tokens(memories or "")
-        + count_tokens(skill_context or "")
-        + count_tokens(profile or "")
-        + count_tokens(entity_dep_ctx or "")
+        estimate_tokens(state.get("rolling_summary", "") or "")
+        + estimate_tokens(memories or "")
+        + estimate_tokens(skill_context or "")
+        + estimate_tokens(profile or "")
+        + estimate_tokens(entity_dep_ctx or "")
     )
 
     log.info("preprocess", session_id=session_id, msg_count=len(_msgs), tokens=token_count)

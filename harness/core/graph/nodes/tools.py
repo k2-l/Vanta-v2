@@ -196,9 +196,9 @@ async def tool_node(state: PenAgentState, config: RunnableConfig) -> dict:
     # 叠加会话的活跃 engagement（scope 门来源）——在 create_task 前设好，任务复制到该上下文
     await _apply_active_engagement(state.get("session_id", ""))
 
-    max_tc = _s.max_tool_calls_per_turn
-    tool_calls = last.tool_calls[:max_tc]
-    if len(last.tool_calls) > max_tc:
+    max_tc = _s.max_tool_calls_per_turn  # <=0 不限本轮工具数（仍受 tool_concurrency 约束）
+    tool_calls = last.tool_calls[:max_tc] if max_tc > 0 else last.tool_calls
+    if max_tc > 0 and len(last.tool_calls) > max_tc:
         log.warning("tool_node.truncated", total=len(last.tool_calls), limit=max_tc)
 
     sem = asyncio.Semaphore(_s.tool_concurrency)
@@ -227,7 +227,7 @@ async def tool_node(state: PenAgentState, config: RunnableConfig) -> dict:
         tool_messages, ordered_logs, errors, failed = collect_tool_results(tool_calls, raw)
         # 悬空 tool_use 守卫：给被 max_tc 截断、未执行的 tool_call 补合成结果，
         # 使 AIMessage 里每个 tool_use 都有配对 tool_result，避免下一轮 Anthropic 调用 400。
-        if len(last.tool_calls) > max_tc:
+        if max_tc > 0 and len(last.tool_calls) > max_tc:
             tool_messages = tool_messages + skipped_tool_messages(last.tool_calls[max_tc:])
         new_failure_counts = dict(_failure_counts_in_state)
         for name in failed:

@@ -23,9 +23,11 @@ async def recovery_node(state: PenAgentState, config: RunnableConfig) -> dict:
     error = state.get("error", "") or ""
     error_type = state.get("error_type") or classify_error(error)
 
-    # 步数软上限：无显式错误但迭代次数超限时，注入进展总结请求让 LLM 询问用户
-    _max_iter = state.get("max_tool_iterations") or get_settings().max_tool_iterations
-    if not error and state.get("tool_iterations", 0) >= _max_iter:
+    # 步数软上限：迭代超限时注入进展总结请求让 LLM 询问用户；_max_iter<=0 跳过（不限）。
+    _max_iter = state.get("max_tool_iterations")
+    if _max_iter is None:
+        _max_iter = get_settings().max_tool_iterations
+    if not error and _max_iter > 0 and state.get("tool_iterations", 0) >= _max_iter:
         iterations = state.get("tool_iterations", 0)
         soft_limit_msg = HumanMessage(
             content=(

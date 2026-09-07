@@ -247,7 +247,8 @@ def _build_tool_node(allowed_names: set[str] | None):
         current_depth = state.get("agent_depth", 0)
         depth_token = _agent_depth.set(current_depth)
 
-        tool_calls = last.tool_calls[: s.max_tool_calls_per_turn]
+        _max_tc = s.max_tool_calls_per_turn  # <=0 表示不限（仍受 tool_concurrency 约束）
+        tool_calls = last.tool_calls[:_max_tc] if _max_tc > 0 else last.tool_calls
         sem = asyncio.Semaphore(s.tool_concurrency)
         sid = state.get("session_id", "_anon")
 
@@ -266,10 +267,8 @@ def _build_tool_node(allowed_names: set[str] | None):
 
         tool_messages, ordered_logs, errors, _failed = collect_tool_results(tool_calls, raw)
         # 悬空 tool_use 守卫（同主图）：截断掉的 tool_call 补合成结果，防下一轮 400。
-        if len(last.tool_calls) > s.max_tool_calls_per_turn:
-            tool_messages = tool_messages + skipped_tool_messages(
-                last.tool_calls[s.max_tool_calls_per_turn :]
-            )
+        if _max_tc > 0 and len(last.tool_calls) > _max_tc:
+            tool_messages = tool_messages + skipped_tool_messages(last.tool_calls[_max_tc:])
 
         update: dict[str, Any] = {
             "messages": tool_messages,
@@ -298,9 +297,10 @@ async def _recovery_node(state: SubAgentState, config: RunnableConfig) -> dict:
     error = state.get("error", "") or ""
     error_type = state.get("error_type") or classify_error(error)
 
-    if not error and state.get("tool_iterations", 0) >= state.get("max_tool_iterations", 10):
+    _mi = state.get("max_tool_iterations", 10)
+    if not error and _mi > 0 and state.get("tool_iterations", 0) >= _mi:
         error_type = "TOOL_LOOP"
-        error = f"工具调用循环：已超过最大迭代次数 {state.get('max_tool_iterations', 10)}"
+        error = f"工具调用循环：已超过最大迭代次数 {_mi}"
 
     if error_type in _NON_RETRYABLE_ERRORS:
         log.warning("sub_agent.recovery.terminal", error_type=error_type)

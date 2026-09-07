@@ -15,6 +15,7 @@ from weakref import WeakValueDictionary
 
 import structlog
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.errors import GraphRecursionError
 
 from harness.core.capabilities.memory import remember
 from harness.core.capabilities.services import maybe_generate_title
@@ -153,6 +154,10 @@ def _validate_graph_depth(s) -> None:
       preprocess(1) + agent(1) + [tools+agent] × max_tool_iterations
       + [recovery+agent] × max_recovery_attempts + summarize(1)
     """
+    # <=0：循环不设次数上限，graph_recursion_limit 即硬安全网，无从静态推算——跳过校验。
+    if s.max_tool_iterations <= 0:
+        log.info("graph.unbounded_tool_loop", recursion_limit=s.graph_recursion_limit)
+        return
     min_required = 3 + 2 * (s.max_tool_iterations + s.max_recovery_attempts)
     safety_margin = 10
     if s.graph_recursion_limit < min_required + safety_margin:
@@ -558,6 +563,18 @@ class AgentRuntime:
                             )
                         )
 
+        except GraphRecursionError:
+            # 递归硬上限是最终安全网——优雅收尾而非空白 failed。
+            log.warning("runtime.graph_recursion_limit", limit=s.graph_recursion_limit)
+            _graph_ok = False
+            if not final_text.strip():
+                _rec_msg = (
+                    f"任务已达图递归硬上限（graph_recursion_limit={s.graph_recursion_limit}）而停止。"
+                    "这是一层安全网，通常意味着工具循环步数过多——"
+                    "可在配置中调高该上限，或让我分阶段继续。"
+                )
+                final_text = _rec_msg
+                yield event_to_sse(TextDelta(role="worker", text=_rec_msg))
         except Exception as exc:  # noqa: BLE001
             log.error("runtime.graph_error", exc=str(exc)[:300])
             _graph_ok = False

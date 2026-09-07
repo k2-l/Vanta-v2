@@ -46,6 +46,23 @@ def count_messages_tokens(messages: list[Any]) -> int:
     return total
 
 
+def estimate_tokens(text: str) -> int:
+    """廉价 token 估算（len//4），仅供观测/日志；精确边界仍用 count_tokens。"""
+    return max(1, len(text) // 4) if text else 0
+
+
+def estimate_messages_tokens(messages: list[Any]) -> int:
+    """消息列表的廉价 token 估算（不跑 tiktoken）。"""
+    total = 0
+    for m in messages:
+        c = getattr(m, "content", None)
+        if isinstance(c, str):
+            total += len(c)
+        elif isinstance(c, list):
+            total += sum(len(b.get("text", "") or str(b)) for b in c if isinstance(b, dict))
+    return total // 4
+
+
 def truncate_to_tail_tokens(text: str, max_tokens: int) -> str:
     """保留文本末尾 max_tokens 个 token（按 token 边界对齐）。"""
     enc = _get_enc()
