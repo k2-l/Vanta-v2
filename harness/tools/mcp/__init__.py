@@ -30,11 +30,10 @@ from typing import Any
 from harness.infra.logging import log
 from harness.infra.settings import get_settings
 from harness.tools.base import Tool, ToolResult
-from harness.tools.registry import registry
+from harness.tools.source import SourceHealth, ToolSource, coordinator
 
 _PROTOCOL_VERSION = "2024-11-05"
 _REQUEST_TIMEOUT = 30.0
-_DRAIN_SECONDS = 5.0  # 热卸载延迟关子进程，给 in-flight 工具调用留窗口
 _RECONNECT_COOLDOWN = 5.0  # 按需重连的冷却间隔：持续宕机时避免每次调用都 spawn 子进程
 
 
@@ -205,98 +204,76 @@ class MCPTool(Tool):
             return ToolResult(ok=False, output="", error=f"{type(exc).__name__}: {exc}")
 
 
-class MCPManager:
-    """按 name 管理所有 MCP server 的连接生命周期 + 运行时状态。
+class MCPSource(ToolSource):
+    """单个 MCP server 作为一个工具来源。id=mcp:<name>，kind=mcp。
 
-    与 ToolRegistry 的关系：mount 成功后逐个 registry.register(MCPTool(...))；
-    unmount 时 registry.unregister_prefix(f"mcp__{name}__") 立即摘除工具（同步生效，
-    下一轮 agent 对话即看不到），子进程关闭则按 drain 策略延迟，二者解耦。
-
-    并发：所有写操作（mount/unmount）经 _lock 串行化，避免同名 server 并发
-    增删时状态错乱；test() 不碰 manager 状态，无需加锁。
+    discover() 拉起 stdio 子进程 + tools/list，产出 MCPTool（不自注册，由协调器登记）；
+    aclose() 关子进程。注册/摘除、drain 延迟、并发串行化统一由 ToolSourceCoordinator 负责。
     """
 
-    def __init__(self) -> None:
-        self._clients: dict[str, MCPClient] = {}
-        self._status: dict[str, dict[str, Any]] = {}  # name -> {status, error, tools}
-        self._lock = asyncio.Lock()
+    kind = "mcp"
+
+    def __init__(self, spec: dict[str, Any]) -> None:
+        self._spec = spec
+        self.name = spec.get("name", "")
+        self.id = f"mcp:{self.name}"
+        self._client: MCPClient | None = None
+
+    async def discover(self) -> list[Tool]:
+        command = self._spec.get("command", "")
+        if not self.name or not command:
+            raise ValueError("缺少 name/command")
+        client = MCPClient(self.name, command, self._spec.get("args") or [], self._spec.get("env") or {})
+        try:
+            await client.start()
+            raw = await client.list_tools()
+        except Exception as exc:  # noqa: BLE001 —— 把 stderr 尾附到异常，交协调器记 status
+            stderr = " | ".join(client._stderr_tail)  # noqa: SLF001
+            await client.close()
+            raise RuntimeError(str(exc)[:200] + (f"；stderr: {stderr}" if stderr else "")) from exc
+        self._client = client
+        return [MCPTool(client, t["name"], t.get("description", ""), t.get("inputSchema")) for t in raw]
+
+    async def aclose(self) -> None:
+        if self._client is not None:
+            await self._client.close()
+            self._client = None
+
+    async def health(self) -> SourceHealth:
+        if self._client is None or self._client._is_dead():  # noqa: SLF001
+            return SourceHealth(ok=False, detail="disconnected")
+        return SourceHealth(ok=True)
+
+
+class _MCPManagerFacade:
+    """兼容门面：保留 routes/mcp.py 依赖的 mount/unmount/snapshot/test 旧签名，
+    内部委托给统一的 ToolSourceCoordinator。server name ↔ source id(mcp:<name>) 转换在此。
+    """
 
     async def mount(self, spec: dict[str, Any]) -> dict[str, Any]:
-        """拉起一个 MCP server 并注册其工具。幂等：已挂载同名 server 先原地卸载。
-
-        单 server 失败只记 status="error"+stderr 尾、不向上抛异常（server 互相隔离，
-        一个连不上不影响其余 server 与主服务）。返回该 server 的最新状态快照。
-        """
-        name = spec.get("name", "")
-        command = spec.get("command", "")
-        async with self._lock:
-            if name in self._clients:
-                await self._unmount_locked(name, drain=False)
-
-            if not name or not command:
-                self._status[name or "?"] = {"status": "error", "error": "缺少 name/command", "tools": []}
-                return dict(self._status[name or "?"])
-
-            client = MCPClient(name, command, spec.get("args") or [], spec.get("env") or {})
-            try:
-                await client.start()
-                tools = await client.list_tools()
-            except Exception as exc:  # noqa: BLE001
-                stderr = " | ".join(client._stderr_tail)  # noqa: SLF001 — 同模块内部访问，报错诊断用
-                err = str(exc)[:200] + (f"；stderr: {stderr}" if stderr else "")
-                log.warning("mcp.server_failed", server=name, error=err)
-                await client.close()
-                self._status[name] = {"status": "error", "error": err, "tools": []}
-                return dict(self._status[name])
-
-            self._clients[name] = client
-            tool_names: list[str] = []
-            for t in tools:
-                tool = MCPTool(client, t["name"], t.get("description", ""), t.get("inputSchema"))
-                try:
-                    registry.unregister(tool.name)  # 防残留（理论上 unmount 已清，双重保险）
-                    registry.register(tool)
-                    tool_names.append(tool.name)
-                except (ValueError, KeyError) as exc:
-                    log.warning("mcp.tool_skip", server=name, error=str(exc)[:120])
-            self._status[name] = {"status": "connected", "error": None, "tools": tool_names}
-            log.info("mcp.server_ready", server=name, tools=len(tool_names))
-            return dict(self._status[name])
+        return self._strip(await coordinator.mount(MCPSource(spec)))
 
     async def unmount(self, name: str, *, drain: bool = True) -> list[str]:
-        """卸载一个 MCP server：立即摘除其工具，子进程按 drain 策略延迟/立即关闭。
-
-        返回被摘除的工具名列表（不存在时为空列表，幂等）。
-        """
-        async with self._lock:
-            return await self._unmount_locked(name, drain=drain)
-
-    async def _unmount_locked(self, name: str, *, drain: bool) -> list[str]:
-        """unmount 的无锁版本，供已持锁的调用方（mount 的幂等重挂载）内部复用。"""
-        removed = registry.unregister_prefix(f"mcp__{name}__")
-        client = self._clients.pop(name, None)
-        self._status.pop(name, None)
-        if client is not None:
-            if drain:
-                asyncio.create_task(self._drain_close(name, client))
-            else:
-                await client.close()
-        return removed
-
-    async def _drain_close(self, name: str, client: MCPClient) -> None:
-        """延迟关闭：给已摘除工具但仍 in-flight 的调用留出窗口期再杀子进程。"""
-        await asyncio.sleep(_DRAIN_SECONDS)
-        try:
-            await client.close()
-        except Exception as exc:  # noqa: BLE001 — drain 关闭失败不应影响主流程
-            log.warning("mcp.drain_close_failed", server=name, error=str(exc)[:200])
+        return await coordinator.unmount(f"mcp:{name}", drain=drain)
 
     def snapshot(self) -> dict[str, dict[str, Any]]:
-        """返回所有已挂载 server 的运行时状态快照（name -> {status, error, tools}），供 GET 路由叠加到持久配置上。"""
-        return {name: dict(s) for name, s in self._status.items()}
+        # 协调器按 source id(mcp:<name>) 存；剥前缀回 server name，保持旧契约。
+        return {
+            sid[len("mcp:"):]: self._strip(st)
+            for sid, st in coordinator.snapshot(kind="mcp").items()
+        }
+
+    @staticmethod
+    def _strip(st: dict[str, Any]) -> dict[str, Any]:
+        """去掉协调器内部的 kind 键，只回 routes 期望的 {status,error,tools}。"""
+        return {
+            "status": st.get("status", "disconnected"),
+            "error": st.get("error"),
+            "tools": st.get("tools", []),
+        }
 
     async def test(self, spec: dict[str, Any]) -> dict[str, Any]:
-        """临时拉起一个 MCP server 验证可连通性，用完即关，不进 registry/manager 状态。"""
+        """临时拉起一个 MCP server 验证可连通性，用完即关，不进 registry/协调器状态。"""
         name = spec.get("name") or "_test_"
         command = spec.get("command", "")
         if not command:
@@ -314,7 +291,7 @@ class MCPManager:
             await client.close()
 
 
-manager = MCPManager()
+manager = _MCPManagerFacade()
 
 
 async def init_mcp_tools() -> None:
@@ -326,6 +303,6 @@ async def init_mcp_tools() -> None:
 
 
 async def shutdown_mcp() -> None:
-    """进程关闭：逐个卸载，drain=False 直接关子进程（不需要留窗口期，进程本身都要退出了）。"""
-    for name in list(manager._clients):  # noqa: SLF001 — 同模块内部访问
-        await manager.unmount(name, drain=False)
+    """进程关闭：逐个卸载 MCP 来源，drain=False 直接关子进程（进程本身都要退出了）。"""
+    for sid in list(coordinator.snapshot(kind="mcp")):
+        await coordinator.unmount(sid, drain=False)

@@ -64,6 +64,10 @@ class ToolRegistry:
         self._invalidate_caches()
         return names
 
+    def __contains__(self, name: str) -> bool:
+        """name（经别名解析）是否已注册。供 ToolSourceCoordinator 幂等替换判断。"""
+        return self._aliases.get(name, name) in self._tools
+
     def get(self, name: str) -> Tool:
         name = self._aliases.get(name, name)
         if name not in self._tools:

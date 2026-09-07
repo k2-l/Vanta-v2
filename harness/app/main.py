@@ -78,10 +78,24 @@ async def lifespan(app: FastAPI):
             await ckpt_pool.close()
             ckpt_pool = None
 
+    # ── 工具来源统一挂载：builtin（须最先，其后来源归属才正确）→ mcp → plugins ──
+    try:
+        from harness.tools.source import coordinator
+        from harness.tools.sources.builtin import BuiltinSource
+
+        await coordinator.mount(BuiltinSource())
+    except Exception as exc:  # noqa: BLE001
+        log.warning("builtin.mount_failed", error=str(exc)[:200])
     try:
         await init_mcp_tools()
     except Exception as exc:  # noqa: BLE001
         log.warning("mcp.init_failed", error=str(exc)[:200])
+    try:
+        from harness.tools.sources.plugin import load_plugins
+
+        await load_plugins()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("plugins.load_failed", error=str(exc)[:200])
     try:
         yield
     finally:
