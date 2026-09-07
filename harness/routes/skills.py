@@ -134,12 +134,6 @@ def _invalidate_caches() -> None:
         invalidate_context_cache()
     except Exception:
         pass
-    try:
-        from harness.skills.loader import invalidate_entries_cache
-
-        invalidate_entries_cache()
-    except Exception:
-        pass
 
 
 def _sync_skill_vector(name: str, description: str) -> None:

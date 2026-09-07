@@ -58,8 +58,8 @@ class RunAgentTool(Tool):
         task: str,
         context: str = "",
     ) -> ToolResult:
-        from harness.agents.loader import load_agent
         from harness.infra.settings import get_settings
+        from harness.providers import get_provider
 
         s = get_settings()
         current_depth = current_sub_agent_depth()
@@ -72,9 +72,9 @@ class RunAgentTool(Tool):
                 error_code="DEPTH_LIMIT",
             )
 
-        # ── 加载 Agent 定义（统一协议：load_agent → EntityProvider.get，直接消费 AgentFull）──
+        # ── 加载 Agent 定义（统一协议：EntityProvider.get，直接消费 AgentFull）──
         try:
-            agent = load_agent(name)
+            agent = get_provider("agent").get(name)
         except Exception as exc:  # noqa: BLE001
             return ToolResult.fail(
                 error=f"加载 Agent '{name}' 时出错：{exc}",

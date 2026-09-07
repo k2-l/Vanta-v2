@@ -35,21 +35,3 @@ class SkillProvider(BaseFileProvider):
             allowed_tools=normalize_str_list(fm.get("allowed-tools")),
             argument_hint=fm.get("argument-hint"),
         )
-
-
-# ── 单例 ─────────────────────────────────────────────────────
-_provider: SkillProvider | None = None
-
-
-def get_skill_provider() -> SkillProvider:
-    global _provider
-    if _provider is None:
-        _provider = SkillProvider()
-        _provider.reload()
-    return _provider
-
-
-def reset_skill_provider() -> None:
-    """测试用：清空单例。"""
-    global _provider
-    _provider = None

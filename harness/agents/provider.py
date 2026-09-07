@@ -34,21 +34,3 @@ class AgentProvider(BaseFileProvider):
             path=path,
             tools=normalize_str_list(fm.get("tools")),
         )
-
-
-# ── 单例 ─────────────────────────────────────────────────────
-_provider: AgentProvider | None = None
-
-
-def get_agent_provider() -> AgentProvider:
-    global _provider
-    if _provider is None:
-        _provider = AgentProvider()
-        _provider.reload()
-    return _provider
-
-
-def reset_agent_provider() -> None:
-    """测试用：清空单例。"""
-    global _provider
-    _provider = None

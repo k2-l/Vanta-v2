@@ -193,6 +193,4 @@ async def scan_and_register(
 def invalidate_entity_caches() -> None:
     """统一缓存失效。"""
     from harness.core.context.builder import invalidate_context_cache
-    from harness.skills.loader import invalidate_entries_cache
     invalidate_context_cache()
-    invalidate_entries_cache()
