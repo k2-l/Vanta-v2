@@ -23,6 +23,7 @@ workspace/                              Agent / Skill / Knowledge 文件
 
 - [skill.md](./docs/skill.md) · [agent.md](./docs/agent.md) — 声明式能力（协议 A，文件驱动）
 - [tool.md](./docs/tool.md) · [mcp.md](./docs/mcp.md) · [plugin.md](./docs/plugin.md) — 可执行动作（协议 B，统一接入）
+- [Tauri Desktop GUI 定稿规范](./docs/tauri-desktop-gui-spec.md) · [实施 Plan](./docs/tauri-desktop-implementation-plan.md)
 
 ---
 

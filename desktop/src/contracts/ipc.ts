@@ -75,7 +75,7 @@ export type IpcContract = {
   [IPC.authLogout]: { args: { connectionId: string }; result: void };
   [IPC.apiRequest]: { args: { connectionId: string; operation: ApiOperation }; result: unknown };
   [IPC.chatStart]: {
-    args: { connectionId: string; sessionId: string; content: string; clientRequestId: string };
+    args: { connectionId: string; sessionId?: string; content: string; clientRequestId: string; onEvent: unknown };
     result: StreamHandle;
   };
   [IPC.runSubscribe]: { args: { connectionId: string; runId: string; afterSeq?: number }; result: StreamHandle };

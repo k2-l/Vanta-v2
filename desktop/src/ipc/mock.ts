@@ -7,11 +7,15 @@
 
 import { DEFAULT_CAPABILITIES } from "@/contracts/connection";
 import type { ConnectionProfile } from "@/contracts/connection";
+import type { ChatMessage, ChatStreamPacket, SessionSummary } from "@/contracts/chat";
 import type { IpcContract } from "@/contracts/ipc";
+import type { StartChatArgs } from "./chat";
 
 const store: {
   connections: ConnectionProfile[];
   authed: Set<string>;
+  sessions: SessionSummary[];
+  messages: Record<string, ChatMessage[]>;
 } = {
   connections: [
     {
@@ -23,7 +27,27 @@ const store: {
     },
   ],
   authed: new Set(),
+  sessions: [
+    {
+      id: "session-mock",
+      title: "欢迎使用 Vanta",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    },
+  ],
+  messages: {
+    "session-mock": [
+      {
+        id: "message-mock",
+        role: "assistant",
+        content: "这是浏览器 mock 会话。连接真实 Tauri Core 后，消息会由后端流式返回。",
+        created_at: new Date().toISOString(),
+      },
+    ],
+  },
 };
+
+const streams = new Map<string, ReturnType<typeof setTimeout>[]>();
 
 let seq = 1;
 const uid = (p: string) => `${p}_${(seq++).toString(36)}${Math.random().toString(36).slice(2, 6)}`;
@@ -98,8 +122,21 @@ export async function mockInvoke<C extends keyof IpcContract>(
       return delay(undefined) as never;
     }
 
-    case "api_request":
-      return delay({ mock: true, operation: a?.operation }) as never;
+    case "api_request": {
+      const operation = a?.operation as { op?: string; sessionId?: string } | undefined;
+      if (operation?.op === "sessions.list") return delay(store.sessions.slice()) as never;
+      if (operation?.op === "sessions.messages") {
+        return delay(store.messages[operation.sessionId ?? ""]?.slice() ?? []) as never;
+      }
+      return delay({ mock: true, operation }) as never;
+    }
+
+    case "stream_stop": {
+      const handleId = a?.handleId as string;
+      for (const timer of streams.get(handleId) ?? []) clearTimeout(timer);
+      streams.delete(handleId);
+      return delay(undefined) as never;
+    }
 
     case "app_check_update":
       return delay({ available: false }) as never;
@@ -111,4 +148,41 @@ export async function mockInvoke<C extends keyof IpcContract>(
         retryable: false,
       });
   }
+}
+
+export async function mockStartChat(
+  args: StartChatArgs,
+  onEvent: (packet: ChatStreamPacket) => void,
+): Promise<IpcContract["chat_start"]["result"]> {
+  const handleId = uid("stream");
+  const sessionId = args.sessionId ?? uid("session");
+  if (!store.sessions.some((session) => session.id === sessionId)) {
+    const now = new Date().toISOString();
+    store.sessions.unshift({ id: sessionId, title: args.content.slice(0, 28), created_at: now, updated_at: now });
+    store.messages[sessionId] = [];
+  }
+  store.messages[sessionId].push({
+    id: uid("message"), role: "user", content: args.content, created_at: new Date().toISOString(),
+  });
+
+  const answer = `收到：${args.content}\n\n这是一段由浏览器 mock 生成的流式回复。`;
+  const chunks = answer.match(/.{1,5}/gs) ?? [answer];
+  const timers: ReturnType<typeof setTimeout>[] = [];
+  const emit = (packet: ChatStreamPacket, index: number) => {
+    timers.push(setTimeout(() => onEvent(packet), index * 45));
+  };
+  emit({ event: "session", data: sessionId }, 1);
+  chunks.forEach((text, index) => emit(
+    { event: "text_delta", data: { type: "text_delta", text } }, index + 2,
+  ));
+  emit({ event: "done", data: { type: "done" } }, chunks.length + 2);
+  timers.push(setTimeout(() => {
+    store.messages[sessionId].push({
+      id: uid("message"), role: "assistant", content: answer, created_at: new Date().toISOString(),
+    });
+    onEvent({ event: "stream.closed", data: { reason: "completed" } });
+    streams.delete(handleId);
+  }, (chunks.length + 3) * 45));
+  streams.set(handleId, timers);
+  return { handleId, channelId: seq };
 }

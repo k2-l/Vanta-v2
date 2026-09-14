@@ -119,15 +119,15 @@ struct HealthBody {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerCapabilities {
-    #[serde(default)]
+    #[serde(default, alias = "api_version")]
     pub api_version: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "run_snapshot")]
     pub run_snapshot: bool,
-    #[serde(default)]
+    #[serde(default, alias = "event_replay")]
     pub event_replay: bool,
-    #[serde(default)]
+    #[serde(default, alias = "run_cancel")]
     pub run_cancel: bool,
-    #[serde(default)]
+    #[serde(default, alias = "artifact_export")]
     pub artifact_export: bool,
 }
 
@@ -231,7 +231,7 @@ pub async fn request(
 }
 
 /// HTTP 状态码 → ClientError.kind（方案 §8.1：Rust 归一化错误）。
-fn map_status(status: reqwest::StatusCode) -> ClientError {
+pub(crate) fn map_status(status: reqwest::StatusCode) -> ClientError {
     let code = status.as_u16();
     let kind = match code {
         401 => ErrorKind::Unauthorized,

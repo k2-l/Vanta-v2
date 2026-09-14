@@ -7,11 +7,14 @@ pub fn redact(input: &str) -> String {
     let mut out = input.to_string();
     for marker in ["Bearer ", "token=", "password=", "api_key=", "authorization:"] {
         if let Some(pos) = out.to_lowercase().find(&marker.to_lowercase()) {
-            let end = out[pos..]
+            let value_start = pos + marker.len();
+            let end = out[value_start..]
                 .find(|c: char| c.is_whitespace() || c == '&' || c == '"')
-                .map(|e| pos + e)
+                .map(|e| value_start + e)
                 .unwrap_or(out.len());
-            out.replace_range(pos..end, &format!("{marker}<redacted>"));
+            if end > value_start {
+                out.replace_range(value_start..end, "<redacted>");
+            }
         }
     }
     out

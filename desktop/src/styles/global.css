@@ -34,3 +34,38 @@ code,
 pre {
   font-family: var(--font-mono);
 }
+
+.chat-markdown {
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.chat-markdown > *:first-child {
+  margin-top: 0;
+}
+
+.chat-markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+.chat-markdown p,
+.chat-markdown ul,
+.chat-markdown ol,
+.chat-markdown pre,
+.chat-markdown blockquote {
+  margin: 0.7em 0;
+}
+
+.chat-markdown pre {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  padding: 12px;
+}
+
+.chat-markdown :not(pre) > code {
+  border-radius: 4px;
+  background: var(--bg-inset);
+  padding: 0.1em 0.35em;
+}

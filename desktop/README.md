@@ -1,7 +1,11 @@
 # Vanta Desktop（Tauri 瘦客户端）
 
-按 [`docs/tauri-thin-client-plan.md`](../docs/tauri-thin-client-plan.md) 搭建的桌面客户端。
-当前进度：**G0 协议与工程地基**（骨架）。
+Vanta 的 Tauri 2 桌面瘦客户端。当前进度：**G1 可用聊天最小闭环**。
+
+设计与施工基线：
+
+- [GUI 定稿规范](../docs/tauri-desktop-gui-spec.md)
+- [GUI 实施 Plan](../docs/tauri-desktop-implementation-plan.md)
 
 ## 边界（方案 §5.1）
 
@@ -25,9 +29,9 @@ src-tauri/
     error.rs            ClientError（§8.3）
     connections/        profile 存储 + URL 标准化（§9.1）
     credentials/        钥匙串凭据保管（§14.2）
-    backend_gateway/    REST + ApiOperation 枚举 + 错误归一化（§8）
+    backend_gateway/    REST + ApiOperation 枚举 + 错误归一化
     diagnostics/        脱敏
-    commands/           IPC allowlist
+    commands/           IPC allowlist + SSE → Channel 流式桥
   capabilities/         最小 capability（§14.1）
   tauri.conf.json       严格 CSP、窗口配置
 ```
@@ -53,13 +57,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 # Linux 还需 WebKitGTK 等系统依赖，见 https://v2.tauri.app/start/prerequisites/
 ```
 
-首次构建前生成图标（`src-tauri/icons/` 目前为空）：
-
-```bash
-npm run tauri icon path/to/logo.png
-```
-
-然后：
+应用图标已生成。运行：
 
 ```bash
 npm run tauri:dev     # 开发
@@ -72,12 +70,20 @@ npm run tauri:build   # 打包
 - [x] 契约冻结：ClientError / ConnectionProfile / 事件信封 / IPC allowlist
 - [x] Rust command / 错误模型 / connection profile / 凭据保管（源码就绪）
 - [x] UI tokens、hash 路由、六区导航、基础组件
-- [ ] 连真实后端登录取版本（需装 Rust 工具链后 `tauri:dev` 验证）
-- [ ] 后端补 `/health` capability 协商与 run 标识（前端已按可选字段容错）
+- [x] Rust Core 编译与单元测试通过
+- [x] 后端 `/health` 提供 `capabilities` / `api_version`
+- [ ] 连真实后端完成端到端登录与聊天验证
 
-## 待办（进入 G1 前）
+## G1 当前能力
 
-- 装 Rust 工具链，`cargo build` 校验 Core（本机当前无 cargo）
-- 生成应用图标
-- 补 eslint 配置（`npm run lint` 脚本已留位）
-- 后端 `/health` 增加 `capabilities` / `api_version` 字段
+- 会话列表与消息历史
+- 新建会话、发送消息、流式 Markdown 回复
+- Rust Core 持有后端 URL/JWT，通过 Tauri Channel 有序转发 SSE
+- 停止当前流、浏览器 mock 独立走查
+
+## 下一步
+
+- 按 GUI Plan 进入 G1.5：定稿版桌面 Shell 与设计系统
+- 真实后端端到端验证
+- 工具调用、阶段与用量事件的可视化投影
+- 补 ESLint 配置与前端交互测试

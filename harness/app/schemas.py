@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ChatRequest(BaseModel):
@@ -13,10 +13,22 @@ class ChatRequest(BaseModel):
     execution_env: str | None = None  # "local" | "container:<record-id>"
 
 
+class ServerCapabilities(BaseModel):
+    """桌面客户端能力协商；只声明后端当前真正支持的 run 级能力。"""
+
+    api_version: str = "1"
+    run_snapshot: bool = False
+    event_replay: bool = False
+    run_cancel: bool = False
+    artifact_export: bool = False
+
+
 class HealthResponse(BaseModel):
     status: str
     version: str
     worker_model: str = ""
+    api_version: str = "1"
+    capabilities: ServerCapabilities = Field(default_factory=ServerCapabilities)
 
 
 class SessionOut(BaseModel):
