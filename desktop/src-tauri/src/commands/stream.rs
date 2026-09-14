@@ -8,8 +8,28 @@ use futures_util::StreamExt;
 use serde::Serialize;
 use tauri::{ipc::Channel, State};
 
-fn not_yet(gate: &str) -> ClientError {
-    ClientError::new(ErrorKind::Desktop, format!("流式能力将在 {gate} 阶段接入"), false)
+fn err_packet(err: ClientError) -> StreamPacket {
+    StreamPacket {
+        event: "client_error".into(),
+        data: serde_json::to_value(err).unwrap_or(serde_json::Value::Null),
+    }
+}
+
+/// phases 快照的终态结果。空快照仍可能是刚创建、尚未写入第一个 phase 的运行。
+fn phases_terminal_reason(value: &serde_json::Value) -> Option<&'static str> {
+    let rows = value.as_array()?;
+    if rows.is_empty()
+        || rows.iter().any(|p| {
+            matches!(p.get("status").and_then(|s| s.as_str()), Some("running") | Some("pending"))
+        })
+    {
+        return None;
+    }
+    if rows.iter().any(|p| p.get("status").and_then(|s| s.as_str()) == Some("failed")) {
+        Some("failed")
+    } else {
+        Some("completed")
+    }
 }
 
 #[tauri::command]
@@ -103,13 +123,82 @@ pub async fn chat_start(
     Ok(StreamHandle { handle_id, run_id: None, channel_id })
 }
 
+/// 订阅运行（Plan G2）——后端无 seq 事件流，故以 phases 快照轮询近似「实时」观察：
+/// 拉取 `/sessions/{id}/phases`，作为 `snapshot` 包（携带自增 seq）转发，直到阶段全部终态
+/// 或客户端停止。前端按 phase id 幂等对账、断线后重新订阅（重拉快照而非按序重放）。
 #[tauri::command]
 pub async fn run_subscribe(
-    _connection_id: String,
-    _run_id: String,
-    _after_seq: Option<u64>,
-) -> CmdResult<serde_json::Value> {
-    Err(not_yet("G2"))
+    state: State<'_, AppState>,
+    connection_id: String,
+    run_id: String,
+    after_seq: Option<u64>,
+    on_event: Channel<StreamPacket>,
+) -> CmdResult<StreamHandle> {
+    let base_url = state.connections.resolve_base_url(&connection_id)?;
+    let token = credentials::read_token(&connection_id)?
+        .ok_or_else(|| ClientError::new(ErrorKind::Unauthorized, "未登录", false))?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(6))
+        .timeout(std::time::Duration::from_secs(20))
+        .user_agent("Vanta-Desktop/0.0.0")
+        .build()
+        .map_err(ClientError::from)?;
+
+    let handle_id = uuid::Uuid::new_v4().to_string();
+    let channel_id = on_event.id();
+    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
+    state.streams.insert(handle_id.clone(), cancel_tx);
+    let registry = state.streams.clone();
+    let task_handle = handle_id.clone();
+    let phases_url = format!("{base_url}/sessions/{run_id}/phases");
+    let mut seq = after_seq.unwrap_or(0);
+
+    tauri::async_runtime::spawn(async move {
+        // Channel 关闭或页面卸载时 send/stream_stop 会结束循环，无需把长运行误判为完成。
+        let reason = 'polling: loop {
+            match client.get(&phases_url).bearer_auth(&token).send().await {
+                Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+                    Ok(value) => {
+                        seq += 1;
+                        let packet = StreamPacket {
+                            event: "snapshot".into(),
+                            data: serde_json::json!({ "phases": value, "seq": seq }),
+                        };
+                        if on_event.send(packet).is_err() {
+                            break 'polling "receiver_closed";
+                        }
+                        if let Some(terminal_reason) = phases_terminal_reason(&value) {
+                            break 'polling terminal_reason;
+                        }
+                    }
+                    Err(err) => {
+                        let _ = on_event.send(err_packet(ClientError::from(err)));
+                        break 'polling "failed";
+                    }
+                },
+                Ok(resp) => {
+                    let _ = on_event.send(err_packet(backend_gateway::map_status(resp.status())));
+                    break 'polling "failed";
+                }
+                Err(err) => {
+                    let _ = on_event.send(err_packet(ClientError::from(err)));
+                    break 'polling "failed";
+                }
+            }
+            tokio::select! {
+                _ = &mut cancel_rx => { break 'polling "cancelled"; }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(1500)) => {}
+            }
+        };
+
+        let _ = on_event.send(StreamPacket {
+            event: "stream.closed".into(),
+            data: serde_json::json!({ "reason": reason }),
+        });
+        registry.remove(&task_handle);
+    });
+
+    Ok(StreamHandle { handle_id, run_id: Some(run_id), channel_id })
 }
 
 #[tauri::command]
@@ -176,7 +265,7 @@ fn parse_sse_frame(frame: &[u8]) -> Option<StreamPacket> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_sse_frame, take_sse_frames};
+    use super::{parse_sse_frame, phases_terminal_reason, take_sse_frames};
 
     #[test]
     fn parses_chunked_sse_frames() {
@@ -186,5 +275,22 @@ mod tests {
         assert_eq!(parse_sse_frame(&frames[0]).unwrap().event, "text_delta");
         assert_eq!(parse_sse_frame(&frames[1]).unwrap().event, "done");
         assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn phase_terminal_reason_distinguishes_empty_running_and_failed() {
+        assert_eq!(phases_terminal_reason(&serde_json::json!([])), None);
+        assert_eq!(
+            phases_terminal_reason(&serde_json::json!([{ "status": "running" }])),
+            None
+        );
+        assert_eq!(
+            phases_terminal_reason(&serde_json::json!([{ "status": "ok" }])),
+            Some("completed")
+        );
+        assert_eq!(
+            phases_terminal_reason(&serde_json::json!([{ "status": "ok" }, { "status": "failed" }])),
+            Some("failed")
+        );
     }
 }

@@ -23,6 +23,11 @@ pub enum ApiOperation {
         #[serde(default)]
         limit: Option<u32>,
     },
+    #[serde(rename = "runs.list")]
+    RunsList {
+        #[serde(default)]
+        limit: Option<u32>,
+    },
     #[serde(rename = "sessions.create")]
     SessionsCreate {
         #[serde(default)]
@@ -34,8 +39,17 @@ pub enum ApiOperation {
         #[serde(default)]
         limit: Option<u32>,
     },
+    #[serde(rename = "sessions.phases")]
+    SessionsPhases { session_id: String },
     #[serde(rename = "approvals.list")]
     ApprovalsList,
+    #[serde(rename = "approvals.decide")]
+    ApprovalsDecide { call_id: String, approved: bool },
+    #[serde(rename = "artifacts.list")]
+    ArtifactsList {
+        #[serde(default)]
+        kind: Option<String>,
+    },
     #[serde(rename = "budget.get")]
     BudgetGet { session_id: String },
 }
@@ -64,6 +78,12 @@ impl ApiOperation {
                 body: None,
                 auth: true,
             },
+            ApiOperation::RunsList { limit } => Resolved {
+                method: Method::Get,
+                path: format!("/runs?limit={}", limit.unwrap_or(60)),
+                body: None,
+                auth: true,
+            },
             ApiOperation::SessionsCreate { title } => Resolved {
                 method: Method::Post,
                 path: "/sessions".into(),
@@ -76,9 +96,30 @@ impl ApiOperation {
                 body: None,
                 auth: true,
             },
+            ApiOperation::SessionsPhases { session_id } => Resolved {
+                method: Method::Get,
+                path: format!("/sessions/{session_id}/phases"),
+                body: None,
+                auth: true,
+            },
             ApiOperation::ApprovalsList => Resolved {
                 method: Method::Get,
                 path: "/chat/approvals".into(),
+                body: None,
+                auth: true,
+            },
+            ApiOperation::ApprovalsDecide { call_id, approved } => Resolved {
+                method: Method::Post,
+                path: format!("/chat/approvals/{call_id}"),
+                body: Some(serde_json::json!({ "approved": approved })),
+                auth: true,
+            },
+            ApiOperation::ArtifactsList { kind } => Resolved {
+                method: Method::Get,
+                path: match kind {
+                    Some(k) => format!("/v1/artifacts?kind={k}"),
+                    None => "/v1/artifacts".into(),
+                },
                 body: None,
                 auth: true,
             },

@@ -8,13 +8,17 @@ const button = cva(
     variants: {
       variant: {
         primary: "text-[var(--accent-fg)] bg-[var(--accent)] hover:bg-[var(--accent-hover)]",
-        secondary: "border bg-[var(--bg-elevated)] hover:bg-[var(--bg-inset)]",
-        ghost: "hover:bg-[var(--bg-inset)]",
+        secondary: "border bg-[var(--surface-overlay)] hover:bg-[var(--surface-inset)]",
+        ghost: "hover:bg-[var(--surface-inset)]",
         danger: "text-white bg-[var(--danger)] hover:opacity-90",
+        // 弱化红色文本按钮，用于设置页的危险操作（规范 §4.6）。
+        dangerGhost: "text-[var(--danger)] hover:bg-[var(--danger-tint)]",
       },
       size: {
+        xs: "h-7 px-2 text-[12px]",
         sm: "h-8 px-3",
-        md: "h-10 px-4",
+        md: "h-9 px-4",
+        icon: "h-8 w-8 p-0",
       },
     },
     defaultVariants: { variant: "primary", size: "md" },

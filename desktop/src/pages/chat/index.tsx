@@ -1,129 +1,187 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Send, Square } from "lucide-react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { Activity, Plus, RotateCw, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/Button";
-import { EmptyState } from "@/components/EmptyState";
-import type { ChatMessage, ChatStreamPacket, SessionSummary } from "@/contracts/chat";
+import {
+  ModuleLayout,
+  ContextRail,
+  RailSearch,
+  RailGroupLabel,
+  ContentHeader,
+  DetailToggleButton,
+  DetailPanel,
+  ResourceList,
+  ResourceRow,
+  DesktopComposer,
+  StatusDot,
+  EmptyState,
+  LoadingState,
+  ErrorState,
+} from "@/components/desktop";
+import type { ChatMessage, SessionSummary } from "@/contracts/chat";
 import { toClientError } from "@/contracts/errors";
 import { ipc } from "@/ipc/client";
 import { startChat } from "@/ipc/chat";
 import { useConnection } from "@/stores/connection";
-
-type LiveTurn = { sessionId?: string; user: string; assistant: string };
+import { useUi } from "@/stores/ui";
+import { NEW_CHAT_EVENT } from "@/hooks/useHotkeys";
+import { formatRelative } from "@/lib/format";
+import { applyPacket, emptyProjection, type RunProjection } from "@/features/runs/projection";
+import { RunDetailBody } from "@/features/runs/RunDetail";
+import { useRunProjection } from "@/features/runs/useRuns";
+import { StepList } from "@/features/chat/StepList";
 
 export function ChatPage() {
   const connectionId = useConnection((state) => state.activeConnectionId);
   const authenticated = useConnection((state) => state.auth.authenticated);
-  const [selectedId, setSelectedId] = useState<string>();
+  const eventReplay = useConnection((state) => state.capabilities.eventReplay);
+  const selectStore = useUi((s) => s.select);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [selectedId, setSelectedIdLocal] = useState<string | undefined>(
+    () => useUi.getState().modules.chat.selectedId ?? undefined,
+  );
   const [newChat, setNewChat] = useState(false);
   const [draft, setDraft] = useState("");
-  const [live, setLive] = useState<LiveTurn | null>(null);
+  const [search, setSearch] = useState("");
+  const [liveUser, setLiveUser] = useState<string | null>(null);
+  const [projection, setProjection] = useState<RunProjection | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string>();
+  const lastSentRef = useRef<string>("");
   const handleRef = useRef<string>();
   const bottomRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
+
+  const setSelectedId = (id?: string) => {
+    setSelectedIdLocal(id);
+    selectStore("chat", id ?? null);
+  };
+
+  const resetLive = () => {
+    setLiveUser(null);
+    setProjection(null);
+    setError(undefined);
+  };
 
   const sessions = useQuery<SessionSummary[]>({
     queryKey: ["sessions", connectionId],
     enabled: Boolean(connectionId && authenticated),
     queryFn: async () => {
       const result = await ipc("api_request", {
-        connectionId: connectionId!, operation: { op: "sessions.list", limit: 100 },
+        connectionId: connectionId!,
+        operation: { op: "sessions.list", limit: 100 },
       });
-      return Array.isArray(result) ? result as SessionSummary[] : [];
+      return Array.isArray(result) ? (result as SessionSummary[]) : [];
     },
   });
 
   useEffect(() => {
     if (!selectedId && !newChat && sessions.data?.length) setSelectedId(sessions.data[0].id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [newChat, selectedId, sessions.data]);
+
+  const startNewChat = () => {
+    if (streaming) return;
+    setSelectedId(undefined);
+    setNewChat(true);
+    resetLive();
+  };
+
+  const selectSession = (id: string) => {
+    if (streaming) return;
+    setSelectedId(id);
+    setNewChat(false);
+    resetLive();
+  };
+
+  useEffect(() => {
+    const onNew = () => startNewChat();
+    window.addEventListener(NEW_CHAT_EVENT, onNew);
+    return () => window.removeEventListener(NEW_CHAT_EVENT, onNew);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streaming]);
+
+  useEffect(() => {
+    const state = location.state as { newChat?: boolean } | null;
+    if (!state?.newChat) return;
+    startNewChat();
+    navigate(location.pathname, { replace: true, state: null });
+    // 只消费本次路由 state；startNewChat 随 streaming 变化不应重复触发。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.key]);
 
   const history = useQuery<ChatMessage[]>({
     queryKey: ["messages", connectionId, selectedId],
-    // 新会话收到 session 帧时先展示本地 live turn，避免立即拉历史造成用户消息重复。
     enabled: Boolean(connectionId && authenticated && selectedId && !streaming),
     queryFn: async () => {
       const result = await ipc("api_request", {
         connectionId: connectionId!,
         operation: { op: "sessions.messages", sessionId: selectedId!, limit: 200 },
       });
-      return Array.isArray(result) ? result as ChatMessage[] : [];
+      return Array.isArray(result) ? (result as ChatMessage[]) : [];
     },
   });
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: streaming ? "smooth" : "auto" });
-  }, [history.data, live?.assistant, streaming]);
+  }, [history.data, projection?.assistant, streaming]);
 
-  if (!connectionId || !authenticated) {
-    return (
-      <div className="grid h-full place-items-center p-8">
-        <EmptyState title="连接后开始对话" hint="请先在设置中激活服务器并登录。凭据只保存在本机 Rust Core。" />
-      </div>
-    );
-  }
+  const groups = useMemo(() => groupSessions(sessions.data ?? [], search), [sessions.data, search]);
+  const activeSession = sessions.data?.find((s) => s.id === selectedId);
+  const liveMatches = projection && (!projection.sessionId || projection.sessionId === selectedId);
+  const {
+    projection: storedProjection,
+    isLoading: storedRunLoading,
+    isError: storedRunError,
+    error: storedRunErrorMessage,
+    refetch: refetchStoredRun,
+  } = useRunProjection(streaming ? undefined : selectedId);
+  const detailProjection = liveMatches && projection?.phaseOrder.length ? projection : storedProjection;
 
   const finish = async (sessionId?: string) => {
     setStreaming(false);
     handleRef.current = undefined;
+    setLiveUser(null); // 用户与助手消息改由 history 呈现；projection 保留用于步骤/用量。
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["sessions", connectionId] }),
-      sessionId
-        ? queryClient.invalidateQueries({ queryKey: ["messages", connectionId, sessionId] })
-        : Promise.resolve(),
+      sessionId ? queryClient.invalidateQueries({ queryKey: ["messages", connectionId, sessionId] }) : Promise.resolve(),
+      sessionId ? queryClient.invalidateQueries({ queryKey: ["phases", connectionId, sessionId] }) : Promise.resolve(),
     ]);
-    setLive(null);
   };
 
-  const onPacket = (packet: ChatStreamPacket, getSessionId: () => string | undefined) => {
-    if (packet.event === "session" && typeof packet.data === "string") {
-      setSelectedId(packet.data);
-      setNewChat(false);
-      setLive((turn) => turn ? { ...turn, sessionId: packet.data as string } : turn);
-      return;
-    }
-    if (packet.event === "text_delta") {
-      const text = readTextDelta(packet.data);
-      if (text) setLive((turn) => turn ? { ...turn, assistant: turn.assistant + text } : turn);
-      return;
-    }
-    if (packet.event === "client_error") {
-      setError(toClientError(packet.data).message);
-      void finish(getSessionId());
-      return;
-    }
-    if (packet.event === "stream.closed") void finish(getSessionId());
-  };
-
-  const send = async () => {
-    const content = draft.trim();
-    if (!content || streaming) return;
+  const send = async (content: string) => {
+    const trimmed = content.trim();
+    if (!trimmed || streaming) return;
     setDraft("");
     setError(undefined);
     setStreaming(true);
-    setLive({ sessionId: selectedId, user: content, assistant: "" });
+    setLiveUser(trimmed);
+    lastSentRef.current = trimmed;
+    setProjection(emptyProjection(selectedId));
     let runSessionId = selectedId;
     try {
       const handle = await startChat(
-        {
-          connectionId,
-          sessionId: selectedId,
-          content,
-          clientRequestId: crypto.randomUUID(),
-        },
+        { connectionId: connectionId!, sessionId: selectedId, content: trimmed, clientRequestId: crypto.randomUUID() },
         (packet) => {
-          if (packet.event === "session" && typeof packet.data === "string") runSessionId = packet.data;
-          onPacket(packet, () => runSessionId);
+          if (packet.event === "session" && typeof packet.data === "string") {
+            runSessionId = packet.data;
+            setSelectedId(packet.data);
+            setNewChat(false);
+          }
+          if (packet.event === "client_error") setError(toClientError(packet.data).message);
+          setProjection((p) => applyPacket(p ?? emptyProjection(runSessionId), packet));
+          if (packet.event === "stream.closed") void finish(runSessionId);
         },
       );
       handleRef.current = handle.handleId;
     } catch (cause) {
       setError(toClientError(cause).message);
       setStreaming(false);
-      setLive(null);
+      setProjection((p) => (p ? { ...p, status: "failed" } : p));
     }
   };
 
@@ -131,123 +189,188 @@ export function ChatPage() {
     const handleId = handleRef.current;
     if (handleId) {
       await ipc("stream_stop", { handleId });
-      await finish(live?.sessionId ?? selectedId);
+      await finish(projection?.sessionId ?? selectedId);
     }
   };
 
-  const shownLive = live && (!live.sessionId || live.sessionId === selectedId) ? live : null;
+  const connected = Boolean(connectionId && authenticated);
+  const showRunSummary = !streaming && liveMatches && projection && projection.phaseOrder.length > 0;
+
+  const rail = (
+    <ContextRail
+      title="对话"
+      action={
+        <Button size="icon" variant="ghost" aria-label="新建对话" disabled={streaming || !connected} onClick={startNewChat}>
+          <Plus size={16} />
+        </Button>
+      }
+      search={connected ? <RailSearch value={search} onChange={setSearch} placeholder="搜索会话… (⌘K)" /> : undefined}
+    >
+      {!connected ? (
+        <p className="px-2 py-3 text-[12px]" style={{ color: "var(--fg-subtle)" }}>连接并登录后可见会话。</p>
+      ) : sessions.isLoading ? (
+        <p className="px-2 py-3 text-[12px]" style={{ color: "var(--fg-muted)" }}>加载中…</p>
+      ) : groups.length === 0 ? (
+        <p className="px-2 py-3 text-[12px]" style={{ color: "var(--fg-subtle)" }}>
+          {search ? "无匹配会话" : "还没有会话，点右上角新建。"}
+        </p>
+      ) : (
+        groups.map((group) => (
+          <div key={group.label}>
+            <RailGroupLabel>{group.label}</RailGroupLabel>
+            <ResourceList>
+              {group.items.map((session) => (
+                <ResourceRow
+                  key={session.id}
+                  dense
+                  selected={selectedId === session.id}
+                  title={session.title || "新会话"}
+                  meta={formatRelative(session.updated_at)}
+                  onClick={() => selectSession(session.id)}
+                />
+              ))}
+            </ResourceList>
+          </div>
+        ))
+      )}
+    </ContextRail>
+  );
+
+  const openInRuns = () => {
+    if (!selectedId) return;
+    useUi.getState().select("runs", selectedId);
+    useUi.getState().setDetailOpen("runs", true);
+    navigate("/runs");
+  };
+
+  const detail = (
+    <DetailPanel title="运行详情" onClose={() => useUi.getState().setDetailOpen("chat", false)}>
+      {detailProjection && detailProjection.phaseOrder.length > 0 ? (
+        <>
+          <RunDetailBody projection={detailProjection} eventReplay={eventReplay} />
+          <Button size="sm" variant="secondary" className="mt-1 w-full" onClick={openInRuns}>
+            <Activity size={14} />
+            在运行页打开
+          </Button>
+        </>
+      ) : storedRunLoading ? (
+        <LoadingState title="加载运行快照…" />
+      ) : storedRunError ? (
+        <ErrorState
+          title="运行详情加载失败"
+          hint={storedRunErrorMessage}
+          action={<Button size="xs" variant="secondary" onClick={() => void refetchStoredRun()}>重新加载</Button>}
+        />
+      ) : (
+        <EmptyState title="暂无运行详情" hint="发送消息后，这里展示 Run ID、状态、阶段树、用量与关联产物。" />
+      )}
+    </DetailPanel>
+  );
 
   return (
-    <div className="grid h-full grid-cols-[250px_minmax(0,1fr)]">
-      <aside className="flex min-h-0 flex-col border-r" style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}>
-        <div className="flex h-14 items-center justify-between border-b px-3" style={{ borderColor: "var(--border)" }}>
-          <strong className="text-sm">会话</strong>
-          <Button
-            size="sm" variant="ghost" aria-label="新建对话" disabled={streaming}
-            onClick={() => { setSelectedId(undefined); setNewChat(true); setLive(null); setError(undefined); }}
-          >
-            <Plus size={16} />
-          </Button>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-2">
-          {sessions.isLoading && <p className="p-2 text-xs text-[var(--fg-muted)]">加载中…</p>}
-          {sessions.data?.map((session) => (
-            <button
-              key={session.id}
-              className="mb-1 w-full rounded-md px-3 py-2 text-left"
-              style={{
-                background: selectedId === session.id ? "var(--bg-inset)" : "transparent",
-                color: selectedId === session.id ? "var(--fg)" : "var(--fg-muted)",
-              }}
-              onClick={() => { if (!streaming) { setSelectedId(session.id); setNewChat(false); setLive(null); setError(undefined); } }}
-            >
-              <span className="block truncate text-sm">{session.title || "新会话"}</span>
-              <span className="block text-[11px] text-[var(--fg-subtle)]">{formatDate(session.updated_at)}</span>
-            </button>
-          ))}
-        </div>
-      </aside>
+    <ModuleLayout module="chat" rail={rail} detail={detail}>
+      <ContentHeader
+        title={newChat ? "新对话" : (activeSession?.title ?? "对话")}
+        subtitle={connected ? "消息由本机 Rust Core 安全转发到当前服务器" : undefined}
+        leading={streaming ? <StatusDot tone="running" /> : undefined}
+        actions={<DetailToggleButton module="chat" />}
+      />
 
-      <section className="flex min-w-0 flex-col">
-        <header className="flex h-14 shrink-0 items-center border-b px-5" style={{ borderColor: "var(--border)" }}>
-          <h1 className="truncate font-semibold">
-            {sessions.data?.find((session) => session.id === selectedId)?.title ?? "新对话"}
-          </h1>
-        </header>
-
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
-          {!history.isLoading && !(history.data?.length) && !shownLive && (
-            <div className="grid h-full place-items-center">
+      {!connected ? (
+        <EmptyState title="连接后开始对话" hint="请先在设置中激活服务器并登录。凭据只保存在本机 Rust Core。" />
+      ) : (
+        <>
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+            {!history.isLoading && !history.data?.length && !liveUser && !showRunSummary && (
               <EmptyState title="开始一段新对话" hint="消息将由本机 Rust Core 安全转发到当前服务器。" />
-            </div>
-          )}
-          <div className="mx-auto flex max-w-3xl flex-col gap-5">
-            {history.data?.map((message) => <MessageBubble key={message.id} message={message} />)}
-            {shownLive && (
-              <>
-                <MessageBubble message={{ id: "live-user", role: "user", content: shownLive.user, created_at: "" }} />
-                <MessageBubble
-                  message={{ id: "live-assistant", role: "assistant", content: shownLive.assistant || "思考中…", created_at: "" }}
-                  muted={!shownLive.assistant}
-                />
-              </>
             )}
-            <div ref={bottomRef} />
-          </div>
-        </div>
+            <div className="mx-auto flex max-w-3xl flex-col gap-5">
+              {history.data?.map((message) => <MessageBubble key={message.id} message={message} />)}
 
-        <div className="shrink-0 px-6 pb-5">
-          <div className="mx-auto max-w-3xl">
-            {error && <p className="mb-2 text-xs text-[var(--danger)]">{error}</p>}
-            <div className="flex items-end gap-2 rounded-xl border bg-[var(--bg-elevated)] p-2" style={{ borderColor: "var(--border)" }}>
-              <textarea
-                value={draft} rows={1} placeholder="输入消息…"
-                className="max-h-40 min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-sm outline-none"
-                disabled={streaming}
-                onChange={(event) => setDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    void send();
-                  }
-                }}
-              />
-              {streaming ? (
-                <Button size="sm" variant="secondary" onClick={() => void stop()}><Square size={14} />停止</Button>
-              ) : (
-                <Button size="sm" disabled={!draft.trim()} onClick={() => void send()}><Send size={15} />发送</Button>
+              {streaming && liveUser && (
+                <>
+                  <MessageBubble message={{ id: "live-user", role: "user", content: liveUser, created_at: "" }} />
+                  {projection && projection.phaseOrder.length > 0 && <StepList projection={projection} />}
+                  {projection?.assistant ? (
+                    <MessageBubble
+                      message={{ id: "live-assistant", role: "assistant", content: projection.assistant, created_at: "" }}
+                      streaming
+                    />
+                  ) : (
+                    <div className="flex items-center gap-2 text-[12px]" style={{ color: "var(--fg-muted)" }}>
+                      <StatusDot tone="running" /> 思考中…
+                    </div>
+                  )}
+                </>
               )}
+
+              {showRunSummary && projection && <StepList projection={projection} />}
+              <div ref={bottomRef} />
             </div>
-            <p className="mt-2 text-center text-[11px] text-[var(--fg-subtle)]">Enter 发送 · Shift + Enter 换行</p>
           </div>
-        </div>
-      </section>
-    </div>
+
+          <div className="shrink-0 px-6 pb-5">
+            {error && (
+              <div
+                className="mx-auto mb-2 flex max-w-3xl items-center gap-3 rounded-[var(--radius)] border px-3 py-2"
+                style={{ borderColor: "var(--danger)", background: "var(--danger-tint)" }}
+              >
+                <span className="flex-1 text-[12px]" style={{ color: "var(--fg)" }}>{error}</span>
+                <Button size="xs" variant="secondary" disabled={streaming} onClick={() => void send(lastSentRef.current)}>
+                  <RotateCw size={13} /> 重试
+                </Button>
+                <button aria-label="关闭错误" onClick={() => setError(undefined)} style={{ color: "var(--fg-muted)" }}>
+                  <X size={14} />
+                </button>
+              </div>
+            )}
+            <DesktopComposer
+              value={draft}
+              onChange={setDraft}
+              onSend={() => void send(draft)}
+              onStop={() => void stop()}
+              streaming={streaming}
+            />
+          </div>
+        </>
+      )}
+    </ModuleLayout>
   );
 }
 
-function MessageBubble({ message, muted = false }: { message: ChatMessage; muted?: boolean }) {
-  const user = message.role === "user";
+function MessageBubble({ message, streaming = false }: { message: ChatMessage; streaming?: boolean }) {
+  if (message.role === "user") {
+    return (
+      <article
+        className="ml-auto max-w-[80%] select-text rounded-[var(--radius-lg)] px-3.5 py-2.5 text-[13px]"
+        style={{ background: "var(--surface-inset)", color: "var(--fg)" }}
+      >
+        <p className="whitespace-pre-wrap">{message.content}</p>
+      </article>
+    );
+  }
   return (
-    <article className={user ? "ml-auto max-w-[80%] rounded-xl bg-[var(--accent)] px-4 py-3 text-[var(--accent-fg)]" : "mr-auto max-w-full px-1 py-1"}>
-      {user ? <p className="whitespace-pre-wrap">{message.content}</p> : (
-        <div className={muted ? "text-[var(--fg-subtle)]" : "chat-markdown"}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
-        </div>
-      )}
+    <article className="mr-auto max-w-full select-text px-1">
+      <div className={streaming ? "chat-markdown vanta-caret" : "chat-markdown"} style={{ color: "var(--fg)" }}>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+      </div>
     </article>
   );
 }
 
-function readTextDelta(data: unknown): string {
-  if (!data || typeof data !== "object") return "";
-  const text = (data as { text?: unknown }).text;
-  return typeof text === "string" ? text : "";
-}
+type SessionGroup = { label: string; items: SessionSummary[] };
 
-function formatDate(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString(undefined, {
-    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
-  });
+function groupSessions(sessions: SessionSummary[], search: string): SessionGroup[] {
+  const q = search.trim().toLowerCase();
+  const filtered = q ? sessions.filter((s) => (s.title || "").toLowerCase().includes(q)) : sessions;
+  const now = Date.now();
+  const buckets: Record<string, SessionSummary[]> = { 今天: [], 昨天: [], "最近 7 天": [], 更早: [] };
+  for (const s of filtered) {
+    const days = Math.floor((now - new Date(s.updated_at).getTime()) / 86_400_000);
+    const key = days <= 0 ? "今天" : days === 1 ? "昨天" : days <= 7 ? "最近 7 天" : "更早";
+    (buckets[key] ?? buckets["更早"]).push(s);
+  }
+  return Object.entries(buckets)
+    .filter(([, items]) => items.length > 0)
+    .map(([label, items]) => ({ label, items }));
 }

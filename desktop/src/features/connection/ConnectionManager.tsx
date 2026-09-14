@@ -1,7 +1,7 @@
 import { useForm } from "react-hook-form";
 import { useState } from "react";
 import { Button } from "@/components/Button";
-import { EmptyState } from "@/components/EmptyState";
+import { EmptyState } from "@/components/desktop";
 import { useConnections, useSaveConnection, useDeleteConnection, useTestConnection } from "./useConnections";
 import { useActivateConnection, useLogin } from "./useActivate";
 import { useConnection } from "@/stores/connection";

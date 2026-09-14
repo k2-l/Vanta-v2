@@ -18,7 +18,7 @@ from harness.core.runtime import AgentRuntime
 from harness.infra import db
 from harness.infra.event_bus import event_bus
 from harness.infra.logging import log
-from harness.security.approvals import resolve_approval
+from harness.security.approvals import list_pending, resolve_approval
 
 router = APIRouter(tags=["chat"])
 _runtime = AgentRuntime()
@@ -60,6 +60,16 @@ async def chat(
                     log.warning("chat.broadcast.failed", session_id=session_id, error=str(e)[:120])
 
     return EventSourceResponse(event_gen())
+
+
+@router.get("/chat/approvals")
+async def list_approvals(_claims: Annotated[dict, Depends(require_auth)]):
+    """待处理审批队列（全局，进程内内存）。桌面/Web HITL UI 轮询此端点获取挂起项。
+
+    每项：call_id / tool_name / message / session_id / requested_at / expires_at。
+    决策仍走 POST /chat/approvals/{call_id}；resolve 后该项从队列消失。
+    """
+    return list_pending()
 
 
 class ApprovalDecision(BaseModel):

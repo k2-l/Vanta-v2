@@ -1,21 +1,36 @@
 /**
  * 浏览器开发用 mock IPC——仅在无 Tauri host 时启用。
  *
- * 目的：让前端在 `npm run dev`（普通浏览器）下可独立开发与走查 UI，
- * 不代表真实后端行为，也绝不持有真实凭据。连接/凭据数据仅存内存。
+ * 目的：让前端在 `npm run dev`（普通浏览器）下独立开发与走查 UI，
+ * 不代表真实后端行为，也绝不持有真实凭据。连接/凭据/会话仅存内存。
+ * G2 起额外模拟真实事件序列（phase / tool / usage / worker）与 phases 快照。
  */
 
-import { DEFAULT_CAPABILITIES } from "@/contracts/connection";
-import type { ConnectionProfile } from "@/contracts/connection";
-import type { ChatMessage, ChatStreamPacket, SessionSummary } from "@/contracts/chat";
+import type { ConnectionProfile, ServerCapabilities } from "@/contracts/connection";
+import type { ChatMessage, SessionSummary } from "@/contracts/chat";
+import type { PhaseSnapshotRow, RunSummaryWire, StreamPacket } from "@/contracts/stream";
+import type { ApprovalWire, ArtifactWire } from "@/contracts/resources";
 import type { IpcContract } from "@/contracts/ipc";
 import type { StartChatArgs } from "./chat";
+import type { RunSubscribeArgs } from "./run";
+
+/** 与后端 G2 声明对齐：phases 快照可用，事件按序重放 / 服务端取消尚不支持。 */
+const MOCK_CAPS: ServerCapabilities = {
+  apiVersion: "1",
+  runSnapshot: true,
+  eventReplay: false,
+  runCancel: false,
+  artifactExport: false,
+};
 
 const store: {
   connections: ConnectionProfile[];
   authed: Set<string>;
   sessions: SessionSummary[];
   messages: Record<string, ChatMessage[]>;
+  phases: Record<string, PhaseSnapshotRow[]>;
+  approvals: ApprovalWire[];
+  artifacts: ArtifactWire[];
 } = {
   connections: [
     {
@@ -30,9 +45,9 @@ const store: {
   sessions: [
     {
       id: "session-mock",
-      title: "欢迎使用 Vanta",
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+      title: "审计 target-api 的认证与越权面",
+      created_at: new Date(Date.now() - 42 * 60_000).toISOString(),
+      updated_at: new Date(Date.now() - 6 * 60_000).toISOString(),
     },
   ],
   messages: {
@@ -41,10 +56,75 @@ const store: {
         id: "message-mock",
         role: "assistant",
         content: "这是浏览器 mock 会话。连接真实 Tauri Core 后，消息会由后端流式返回。",
-        created_at: new Date().toISOString(),
+        created_at: new Date(Date.now() - 6 * 60_000).toISOString(),
       },
     ],
   },
+  phases: {
+    "session-mock": buildPhaseTree("session-mock", "审计 target-api 的认证与越权面", "ok"),
+  },
+  approvals: [
+    {
+      call_id: "apr_a1b2c3",
+      tool_name: "nmap",
+      message: "对 10.2.0.14 执行主动端口扫描（TCP 1-1024，单主机单次）",
+      session_id: "session-mock",
+      requested_at: new Date(Date.now() - 2 * 60_000).toISOString(),
+      expires_at: new Date(Date.now() + 3 * 60_000).toISOString(),
+    },
+    {
+      call_id: "apr_d4e5f6",
+      tool_name: "http_probe",
+      message: "向 https://target-api.internal/login 提交注入验证请求（只读探测）",
+      session_id: "session-mock",
+      requested_at: new Date(Date.now() - 40_000).toISOString(),
+      expires_at: new Date(Date.now() + 4 * 60_000).toISOString(),
+    },
+  ],
+  artifacts: [
+    {
+      id: "art_finding_1",
+      engagement_id: "eng-mock",
+      producer: "java-auditor",
+      kind: "finding",
+      sensitivity: "internal",
+      title: "H-01 认证绕过：/login 未复核 role 声明",
+      content: "## H-01 认证绕过\n\n`/login` 直接信任请求体中的 `role` 字段，未与服务端会话核对，可越权提升为管理员。\n\n- 影响：越权访问\n- 证据：见请求/响应对\n- 建议：服务端强制以会话身份为准",
+      tags: ["auth", "idor"],
+      vault_ref: "",
+      severity: "high",
+      status: "open",
+      created_at: new Date(Date.now() - 5 * 60_000).toISOString(),
+    },
+    {
+      id: "art_note_1",
+      engagement_id: "eng-mock",
+      producer: "audit-analyst",
+      kind: "note",
+      sensitivity: "public",
+      title: "审计范围与入口梳理",
+      content: "入口：/login, /orders, /admin\n重点：参数拼接进原始 SQL 的位置。",
+      tags: ["scope"],
+      vault_ref: "",
+      severity: "info",
+      status: "open",
+      created_at: new Date(Date.now() - 20 * 60_000).toISOString(),
+    },
+    {
+      id: "art_secret_1",
+      engagement_id: "eng-mock",
+      producer: "recon",
+      kind: "evidence",
+      sensitivity: "secret",
+      title: "抓取到的会话凭据样本",
+      content: "",
+      tags: ["credential"],
+      vault_ref: "secret://vault/eng-mock/cred-sample",
+      severity: "critical",
+      status: "open",
+      created_at: new Date(Date.now() - 30 * 60_000).toISOString(),
+    },
+  ],
 };
 
 const streams = new Map<string, ReturnType<typeof setTimeout>[]>();
@@ -54,6 +134,51 @@ const uid = (p: string) => `${p}_${(seq++).toString(36)}${Math.random().toString
 
 async function delay<T>(v: T, ms = 120): Promise<T> {
   return new Promise((r) => setTimeout(() => r(v), ms));
+}
+
+/** 生成一棵可信的 phase 树（root agent + 规划 / 检索 / 数据流 / 综合）。 */
+function buildPhaseTree(sessionId: string, title: string, tail: PhaseSnapshotRow["status"]): PhaseSnapshotRow[] {
+  const now = Date.now();
+  const at = (i: number) => new Date(now - (6 - i) * 4000).toISOString();
+  const row = (
+    id: string,
+    label: string,
+    status: PhaseSnapshotRow["status"],
+    parent_id: string | undefined,
+    i: number,
+  ): PhaseSnapshotRow => ({
+    id,
+    session_id: sessionId,
+    parent_id: parent_id ?? null,
+    type: parent_id ? "step" : "agent",
+    status,
+    label,
+    payload: { id, label },
+    created_at: at(i),
+    updated_at: at(i + 1),
+  });
+  return [
+    row("agent", title.slice(0, 24), tail, undefined, 0),
+    row("plan", "规划审计路径", "ok", "agent", 1),
+    row("recon", "检索 Sink 与入口", "ok", "agent", 2),
+    row("java-auditor", "委派 java-auditor", tail === "failed" ? "failed" : "ok", "agent", 3),
+    row("synth", "综合结论", tail, "agent", 4),
+  ];
+}
+
+function mockRunSummaries(limit = 60): RunSummaryWire[] {
+  return store.sessions.slice(0, limit).map((session) => {
+    const phases = store.phases[session.id] ?? [];
+    const status: RunSummaryWire["status"] =
+      phases.length === 0
+        ? "queued"
+        : phases.some((phase) => phase.status === "pending" || phase.status === "running")
+          ? "running"
+          : phases.some((phase) => phase.status === "failed")
+            ? "failed"
+            : "completed";
+    return { ...session, status, steps: phases.length };
+  });
 }
 
 export async function mockInvoke<C extends keyof IpcContract>(
@@ -93,7 +218,7 @@ export async function mockInvoke<C extends keyof IpcContract>(
         ok: true,
         serverVersion: "mock-0.0.0",
         workerModel: "claude-mock",
-        capabilities: DEFAULT_CAPABILITIES,
+        capabilities: MOCK_CAPS,
         latencyMs: 12,
       }) as never;
 
@@ -103,7 +228,7 @@ export async function mockInvoke<C extends keyof IpcContract>(
         connectionId: id,
         status: store.authed.has(id) ? "online" : "unauthenticated",
         auth: { authenticated: store.authed.has(id) },
-        health: { ok: true, serverVersion: "mock-0.0.0", capabilities: DEFAULT_CAPABILITIES },
+        health: { ok: true, serverVersion: "mock-0.0.0", capabilities: MOCK_CAPS },
       }) as never;
     }
 
@@ -123,10 +248,29 @@ export async function mockInvoke<C extends keyof IpcContract>(
     }
 
     case "api_request": {
-      const operation = a?.operation as { op?: string; sessionId?: string } | undefined;
+      const operation = a?.operation as
+        | { op?: string; sessionId?: string; limit?: number; kind?: string; callId?: string; approved?: boolean }
+        | undefined;
       if (operation?.op === "sessions.list") return delay(store.sessions.slice()) as never;
+      if (operation?.op === "runs.list") return delay(mockRunSummaries(operation.limit)) as never;
       if (operation?.op === "sessions.messages") {
         return delay(store.messages[operation.sessionId ?? ""]?.slice() ?? []) as never;
+      }
+      if (operation?.op === "sessions.phases") {
+        return delay(store.phases[operation.sessionId ?? ""]?.slice() ?? []) as never;
+      }
+      if (operation?.op === "approvals.list") return delay(store.approvals.slice()) as never;
+      if (operation?.op === "approvals.decide") {
+        const before = store.approvals.length;
+        store.approvals = store.approvals.filter((ap) => ap.call_id !== operation.callId);
+        // resolve 已处理项返回失败，模拟后端幂等（call_id 已失效）。
+        return delay({ ok: store.approvals.length < before }) as never;
+      }
+      if (operation?.op === "artifacts.list") {
+        const rows = operation.kind
+          ? store.artifacts.filter((art) => art.kind === operation.kind)
+          : store.artifacts;
+        return delay(rows.slice()) as never;
       }
       return delay({ mock: true, operation }) as never;
     }
@@ -152,7 +296,7 @@ export async function mockInvoke<C extends keyof IpcContract>(
 
 export async function mockStartChat(
   args: StartChatArgs,
-  onEvent: (packet: ChatStreamPacket) => void,
+  onEvent: (packet: StreamPacket) => void,
 ): Promise<IpcContract["chat_start"]["result"]> {
   const handleId = uid("stream");
   const sessionId = args.sessionId ?? uid("session");
@@ -162,27 +306,76 @@ export async function mockStartChat(
     store.messages[sessionId] = [];
   }
   store.messages[sessionId].push({
-    id: uid("message"), role: "user", content: args.content, created_at: new Date().toISOString(),
+    id: uid("message"),
+    role: "user",
+    content: args.content,
+    created_at: new Date().toISOString(),
   });
 
-  const answer = `收到：${args.content}\n\n这是一段由浏览器 mock 生成的流式回复。`;
-  const chunks = answer.match(/.{1,5}/gs) ?? [answer];
+  const answer = `已完成对「${args.content}」的初步分析：\n\n- 认证面：\`/login\` 未复核 \`role\` 声明，存在越权风险。\n- 注入面：\`orderId\` 参数拼接进原始查询，需 PoC 复核。\n\n建议下一步生成最小 PoC 并在隔离容器验证。`;
+  const chunks = answer.match(/[\s\S]{1,6}/g) ?? [answer];
   const timers: ReturnType<typeof setTimeout>[] = [];
-  const emit = (packet: ChatStreamPacket, index: number) => {
-    timers.push(setTimeout(() => onEvent(packet), index * 45));
+  let step = 0;
+  const emit = (packet: StreamPacket, gap = 60) => {
+    step += 1;
+    timers.push(setTimeout(() => onEvent(packet), step * gap));
   };
-  emit({ event: "session", data: sessionId }, 1);
-  chunks.forEach((text, index) => emit(
-    { event: "text_delta", data: { type: "text_delta", text } }, index + 2,
-  ));
-  emit({ event: "done", data: { type: "done" } }, chunks.length + 2);
-  timers.push(setTimeout(() => {
-    store.messages[sessionId].push({
-      id: uid("message"), role: "assistant", content: answer, created_at: new Date().toISOString(),
-    });
-    onEvent({ event: "stream.closed", data: { reason: "completed" } });
-    streams.delete(handleId);
-  }, (chunks.length + 3) * 45));
+
+  emit({ event: "session", data: sessionId });
+  emit({ event: "worker_start", data: { type: "worker_start", worker: "agent", instruction: args.content.slice(0, 80), task_id: "agent" } });
+  emit({ event: "phase", data: { type: "phase", id: "agent", label: args.content.slice(0, 24), status: "running", task_id: "agent" } });
+  emit({ event: "phase", data: { type: "phase", id: "plan", label: "规划审计路径", status: "running", parent_id: "agent" } });
+  emit({ event: "task_log", data: { type: "task_log", task_id: "agent", message: "载入代码审计知识库" } });
+  emit({ event: "phase", data: { type: "phase", id: "plan", label: "规划审计路径", status: "ok", parent_id: "agent" } });
+  emit({ event: "phase", data: { type: "phase", id: "recon", label: "检索 Sink 与入口", status: "running", parent_id: "agent" } });
+  emit({ event: "tool_call", data: { type: "tool_call", role: "worker", tool: "ripgrep", inputs: { pattern: "execute\\(", glob: "*.java" }, task_id: "agent" } });
+  emit({ event: "tool_result", data: { type: "tool_result", role: "worker", tool: "ripgrep", ok: true, output: "命中 37 处可疑点", task_id: "agent" } }, 140);
+  emit({ event: "phase", data: { type: "phase", id: "recon", label: "检索 Sink 与入口", status: "ok", parent_id: "agent" } });
+  emit({ event: "phase", data: { type: "phase", id: "java-auditor", label: "委派 java-auditor", status: "running", parent_id: "agent" } });
+  emit({ event: "phase", data: { type: "phase", id: "java-auditor", label: "委派 java-auditor", status: "ok", parent_id: "agent" } });
+  emit({ event: "phase", data: { type: "phase", id: "synth", label: "综合结论", status: "running", parent_id: "agent" } });
+  chunks.forEach((text) => emit({ event: "text_delta", data: { type: "text_delta", role: "worker", text, task_id: "agent" } }, 28));
+  emit({ event: "usage", data: { type: "usage", model: "claude-mock", turn_input: 4200, turn_output: 620, turn_cost_usd: 0.021, session_input: 82_400, session_output: 12_900, session_cost_usd: 0.38 } });
+  emit({ event: "phase", data: { type: "phase", id: "synth", label: "综合结论", status: "ok", parent_id: "agent" } });
+  emit({ event: "phase", data: { type: "phase", id: "agent", label: args.content.slice(0, 24), status: "ok", task_id: "agent" } });
+  emit({ event: "done", data: { type: "done" } });
+
+  timers.push(
+    setTimeout(
+      () => {
+        store.messages[sessionId].push({
+          id: uid("message"),
+          role: "assistant",
+          content: answer,
+          created_at: new Date().toISOString(),
+        });
+        store.phases[sessionId] = buildPhaseTree(sessionId, args.content, "ok");
+        const idx = store.sessions.findIndex((s) => s.id === sessionId);
+        if (idx >= 0) store.sessions[idx] = { ...store.sessions[idx], updated_at: new Date().toISOString() };
+        onEvent({ event: "stream.closed", data: { reason: "completed" } });
+        streams.delete(handleId);
+      },
+      (step + 2) * 60,
+    ),
+  );
+  streams.set(handleId, timers);
+  return { handleId, channelId: seq };
+}
+
+export async function mockRunSubscribe(
+  args: RunSubscribeArgs,
+  onEvent: (packet: StreamPacket) => void,
+): Promise<IpcContract["run_subscribe"]["result"]> {
+  const handleId = uid("runsub");
+  const rows = store.phases[args.runId] ?? [];
+  const timers: ReturnType<typeof setTimeout>[] = [];
+  timers.push(setTimeout(() => onEvent({ event: "snapshot", data: { phases: rows.slice(), seq: 1 } }), 60));
+  timers.push(
+    setTimeout(() => {
+      onEvent({ event: "stream.closed", data: { reason: "completed" } });
+      streams.delete(handleId);
+    }, 140),
+  );
   streams.set(handleId, timers);
   return { handleId, channelId: seq };
 }

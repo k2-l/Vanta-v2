@@ -9,6 +9,7 @@ from harness.app.schemas import (
     CompressCommitRequest,
     CompressPreviewOut,
     MessageOut,
+    RunSummaryOut,
     SessionCreate,
     SessionOut,
     SessionUpdate,
@@ -31,6 +32,12 @@ async def list_sessions(limit: int = 50):
         SessionOut(id=s.id, title=s.title, created_at=s.created_at, updated_at=s.updated_at)
         for s in sessions
     ]
+
+
+@router.get("/runs", response_model=list[RunSummaryOut])
+async def list_runs(limit: int = 60):
+    rows = await db.list_run_summaries(limit=max(1, min(limit, 200)))
+    return [RunSummaryOut(**row) for row in rows]
 
 
 @router.post("/sessions", response_model=SessionOut, status_code=201)

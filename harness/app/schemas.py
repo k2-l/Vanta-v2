@@ -17,8 +17,11 @@ class ServerCapabilities(BaseModel):
     """桌面客户端能力协商；只声明后端当前真正支持的 run 级能力。"""
 
     api_version: str = "1"
-    run_snapshot: bool = False
+    # GET /sessions/{id}/phases 提供 run（会话执行）的阶段快照。
+    run_snapshot: bool = True
+    # 后端事件无 sequence，不支持按序重放；断线后由客户端重拉快照对账。
     event_replay: bool = False
+    # 无服务端取消端点；对话流由客户端 stream_stop 中断。
     run_cancel: bool = False
     artifact_export: bool = False
 
@@ -36,6 +39,17 @@ class SessionOut(BaseModel):
     title: str
     created_at: datetime
     updated_at: datetime
+
+
+class RunSummaryOut(BaseModel):
+    """桌面运行中心的轻量汇总；当前一个 run 对应一个 session。"""
+
+    id: str
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    status: str
+    steps: int
 
 
 class SessionCreate(BaseModel):

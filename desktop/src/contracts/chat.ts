@@ -13,7 +13,4 @@ export type ChatMessage = {
 };
 
 /** 后端 SSE 经 Rust Core 解析后，通过有序 Tauri Channel 送达的帧。 */
-export type ChatStreamPacket = {
-  event: string;
-  data: unknown;
-};
+export type { StreamPacket as ChatStreamPacket } from "./stream";

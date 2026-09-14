@@ -41,9 +41,13 @@ export type ApiOperation =
   | { op: "health" }
   | { op: "me" }
   | { op: "sessions.list"; limit?: number }
+  | { op: "runs.list"; limit?: number }
   | { op: "sessions.create"; title?: string }
   | { op: "sessions.messages"; sessionId: string; limit?: number }
+  | { op: "sessions.phases"; sessionId: string }
   | { op: "approvals.list" }
+  | { op: "approvals.decide"; callId: string; approved: boolean }
+  | { op: "artifacts.list"; kind?: string }
   | { op: "budget.get"; sessionId: string };
 
 /** 流句柄——chat_start / run_subscribe 返回，用于 stream_stop。 */
@@ -78,7 +82,10 @@ export type IpcContract = {
     args: { connectionId: string; sessionId?: string; content: string; clientRequestId: string; onEvent: unknown };
     result: StreamHandle;
   };
-  [IPC.runSubscribe]: { args: { connectionId: string; runId: string; afterSeq?: number }; result: StreamHandle };
+  [IPC.runSubscribe]: {
+    args: { connectionId: string; runId: string; afterSeq?: number; onEvent: unknown };
+    result: StreamHandle;
+  };
   [IPC.streamStop]: { args: { handleId: string }; result: void };
   [IPC.artifactExport]: { args: { connectionId: string; artifactId: string }; result: ExportResult };
   [IPC.diagnosticsExport]: { args: void; result: ExportResult };

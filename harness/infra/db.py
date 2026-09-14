@@ -28,6 +28,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    case,
     func,
     select,
     text,
@@ -364,6 +365,62 @@ async def list_sessions(limit: int = 50) -> list[Session]:
             select(Session).order_by(Session.updated_at.desc()).limit(limit)
         )
         return list(result.scalars().all())
+
+
+async def list_run_summaries(limit: int = 60) -> list[dict]:
+    """一次查询返回运行中心所需字段，避免客户端逐会话读取 phases。"""
+
+    steps = func.count(SessionPhase.id)
+    active = func.sum(
+        case((SessionPhase.status.in_(("pending", "running")), 1), else_=0)
+    )
+    failed = func.sum(case((SessionPhase.status == "failed", 1), else_=0))
+    sf = session_factory()
+    async with sf() as db:
+        result = await db.execute(
+            select(
+                Session.id,
+                Session.title,
+                Session.created_at,
+                Session.updated_at,
+                steps.label("steps"),
+                active.label("active"),
+                failed.label("failed"),
+            )
+            .outerjoin(SessionPhase, SessionPhase.session_id == Session.id)
+            .group_by(
+                Session.id,
+                Session.title,
+                Session.created_at,
+                Session.updated_at,
+            )
+            .order_by(Session.updated_at.desc())
+            .limit(limit)
+        )
+
+    summaries: list[dict] = []
+    for row in result:
+        step_count = int(row.steps or 0)
+        status = (
+            "queued"
+            if step_count == 0
+            else "running"
+            if int(row.active or 0) > 0
+            else "failed"
+            if int(row.failed or 0) > 0
+            else "completed"
+        )
+        summaries.append(
+            {
+                "id": row.id,
+                "title": row.title,
+                "created_at": row.created_at,
+                "updated_at": row.updated_at,
+                "status": status,
+                "steps": step_count,
+            }
+        )
+    return summaries
 
 
 async def get_session(session_id: str) -> Session | None:

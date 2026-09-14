@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from harness.infra.event_bus import event_bus
 from harness.infra.logging import log
@@ -21,6 +22,13 @@ from harness.infra.logging import log
 DEFAULT_APPROVAL_TIMEOUT = 300.0  # 秒，与 actionable-improvements.md 原方案一致
 
 _pending: dict[str, asyncio.Future[bool]] = {}
+# 与 _pending 平行的元数据，供 GET /chat/approvals 列出待处理队列（桌面/Web HITL UI）。
+_pending_meta: dict[str, dict] = {}
+
+
+def list_pending() -> list[dict]:
+    """当前进程内所有挂起的审批请求（最新在前）。纯内存，进程重启即清空。"""
+    return sorted(_pending_meta.values(), key=lambda m: m["requested_at"], reverse=True)
 
 
 async def request_approval(
@@ -41,6 +49,15 @@ async def request_approval(
     loop = asyncio.get_running_loop()
     fut: asyncio.Future[bool] = loop.create_future()
     _pending[call_id] = fut
+    now = datetime.now(UTC)
+    _pending_meta[call_id] = {
+        "call_id": call_id,
+        "tool_name": tool_name,
+        "message": message,
+        "session_id": session_id,
+        "requested_at": now.isoformat(),
+        "expires_at": (now + timedelta(seconds=timeout)).isoformat(),
+    }
 
     try:
         await event_bus.publish(
@@ -62,6 +79,7 @@ async def request_approval(
         return False
     finally:
         _pending.pop(call_id, None)
+        _pending_meta.pop(call_id, None)
 
 
 def resolve_approval(call_id: str, approved: bool) -> bool:

@@ -7,19 +7,21 @@ import {
   Settings,
   type LucideIcon,
 } from "lucide-react";
+import type { ModuleId } from "@/stores/ui";
 
 export type NavItem = {
+  id: ModuleId;
   to: string;
   label: string;
   icon: LucideIcon;
 };
 
-/** 六个主导航区域（方案 §21 体验验收）。 */
+/** 六个一级模块，顺序固定（规范 §2）。 */
 export const NAV_ITEMS: NavItem[] = [
-  { to: "/chat", label: "对话", icon: MessageSquare },
-  { to: "/runs", label: "运行", icon: Activity },
-  { to: "/approvals", label: "审批", icon: ShieldCheck },
-  { to: "/artifacts", label: "产物", icon: Package },
-  { to: "/capabilities", label: "能力", icon: Boxes },
-  { to: "/settings", label: "设置", icon: Settings },
+  { id: "chat", to: "/chat", label: "对话", icon: MessageSquare },
+  { id: "runs", to: "/runs", label: "运行", icon: Activity },
+  { id: "approvals", to: "/approvals", label: "审批", icon: ShieldCheck },
+  { id: "artifacts", to: "/artifacts", label: "产物", icon: Package },
+  { id: "capabilities", to: "/capabilities", label: "能力", icon: Boxes },
+  { id: "settings", to: "/settings", label: "设置", icon: Settings },
 ];

@@ -1,74 +1,138 @@
 /**
- * 设计 tokens——统一设计系统的基线（方案 §7 styles/、§21 体验）。
- * 深浅色都显式定义，避免 WebView 借宿主主题。
+ * 设计 tokens —— 统一桌面设计系统的单一来源（GUI 规范 §3）。
+ *
+ * 深色是 :root 默认（规范 §3.1「默认主题：深色」），这样在严格 CSP
+ * （禁止内联脚本、无法在首帧前设置 data-theme）下也不会主题闪烁。
+ * 浅色通过 :root[data-theme="light"] 覆盖；`system` 由 useTheme 解析为
+ * 显式的 data-theme="dark"|"light"，因此这里只需两套色板。
+ *
+ * 规则：页面不散落色值，一律引用这里的 token（规范 §3.1）。
  */
 
 :root {
-  color-scheme: light dark;
+  color-scheme: dark;
 
-  /* 中性 */
-  --bg: #f7f7f8;
-  --bg-elevated: #ffffff;
-  --bg-inset: #efeff1;
-  --border: #e2e2e5;
-  --border-strong: #cfcfd4;
-  --fg: #1a1a1e;
-  --fg-muted: #6b6b74;
-  --fg-subtle: #9a9aa3;
+  /* —— 布局尺寸（规范 §2，与主题无关）—— */
+  --titlebar-h: 42px;
+  --nav-rail-w: 58px;
+  --context-rail-w: 218px;
+  --context-rail-w-compact: 172px;
+  --detail-panel-w: 250px;
+  --content-min-w: 360px;
 
-  /* 品牌 / 强调 */
-  --accent: #4f46e5;
-  --accent-fg: #ffffff;
-  --accent-hover: #4338ca;
+  /* —— 控件与行高（规范 §3.2）—— */
+  --control-h: 32px;
+  --control-h-sm: 28px;
+  --row-h: 46px;
+  --row-h-sm: 40px;
 
-  /* 语义（连接状态 / 审批 / 预算） */
-  --ok: #16a34a;
-  --warn: #d97706;
-  --danger: #dc2626;
-  --unknown: #6b7280;
-
-  /* 尺度 */
-  --radius: 8px;
+  /* —— 圆角四档 6/8/10/12（规范 §3.2）—— */
   --radius-sm: 6px;
+  --radius: 8px;
+  --radius-md: 10px;
   --radius-lg: 12px;
+
+  /* —— 间距 —— */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
+  --space-5: 20px;
   --space-6: 24px;
   --space-8: 32px;
+
+  /* —— 字号（规范 §3.2）——标题 15–18 / 正文 12–14 / 元数据 9–11 —— */
+  --text-title-lg: 18px;
+  --text-title: 16px;
+  --text-title-sm: 15px;
+  --text-body: 13px;
+  --text-body-sm: 12px;
+  --text-meta: 11px;
+  --text-meta-sm: 10px;
 
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
     "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  /* —— 动效（规范 §5：120–220ms）—— */
+  --dur-fast: 120ms;
+  --dur: 160ms;
+  --dur-slow: 220ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+
+  /* ============ 深色色板（默认）============ */
+
+  /* 四级深色背景，不使用纯黑（规范 §3.1）：窗口 / 导航 / 内容 / 浮层 */
+  --surface-window: #0b0b0e;
+  --surface-nav: #111015;
+  --surface-content: #17161d;
+  --surface-overlay: #201f28;
+  --surface-inset: #0e0d12;
+
+  --border: #29282f;
+  --border-strong: #3a3942;
+
+  /* 三级文字层级（规范 §3.1）：正文 / 次要 / 辅助 */
+  --fg: #f2f1f5;
+  --fg-muted: #a1a0ab;
+  --fg-subtle: #6c6b77;
+
+  /* 品牌强调色（规范 §3.1）：仅用于选中态、主操作、活动运行 */
+  --accent: #6657ee;
+  --accent-hover: #7b6ef1;
+  --accent-fg: #ffffff;
+  --accent-tint: color-mix(in srgb, var(--accent) 22%, transparent);
+  --accent-line: color-mix(in srgb, var(--accent) 46%, transparent);
+
+  /* 语义色（规范 §3.1）：成功 / 警告·审批 / 失败·危险 / 未知 */
+  --ok: #35bd78;
+  --warn: #e4a03b;
+  --danger: #e05f63;
+  --unknown: #8a8a95;
+  --ok-tint: color-mix(in srgb, var(--ok) 18%, transparent);
+  --warn-tint: color-mix(in srgb, var(--warn) 18%, transparent);
+  --danger-tint: color-mix(in srgb, var(--danger) 18%, transparent);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.28), 0 1px 3px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 8px 28px rgba(0, 0, 0, 0.4);
+
+  /* —— 兼容旧组件的别名（逐步迁移到 surface-* / 语义 token）—— */
+  --bg: var(--surface-content);
+  --bg-elevated: var(--surface-overlay);
+  --bg-inset: var(--surface-inset);
 }
 
-/* 显式深色（toggle 胜出，两个方向都覆盖）。 */
-:root[data-theme="dark"] {
-  --bg: #0f0f11;
-  --bg-elevated: #17171a;
-  --bg-inset: #1e1e22;
-  --border: #2a2a30;
-  --border-strong: #3a3a42;
-  --fg: #f2f2f4;
-  --fg-muted: #9a9aa3;
-  --fg-subtle: #6b6b74;
-  --accent: #6366f1;
-  --accent-hover: #7c7ef0;
-}
+/* ============ 浅色色板（显式选择时覆盖）============ */
+:root[data-theme="light"] {
+  color-scheme: light;
 
-/* 系统深色（未显式选择 light 时）。 */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #0f0f11;
-    --bg-elevated: #17171a;
-    --bg-inset: #1e1e22;
-    --border: #2a2a30;
-    --border-strong: #3a3a42;
-    --fg: #f2f2f4;
-    --fg-muted: #9a9aa3;
-    --fg-subtle: #6b6b74;
-    --accent: #6366f1;
-    --accent-hover: #7c7ef0;
-  }
+  --surface-window: #e7e7ea;
+  --surface-nav: #f1f1f4;
+  --surface-content: #fafafb;
+  --surface-overlay: #ffffff;
+  --surface-inset: #eeeef1;
+
+  --border: #e3e3e8;
+  --border-strong: #cfcfd6;
+
+  --fg: #191920;
+  --fg-muted: #63636d;
+  --fg-subtle: #96969f;
+
+  --accent: #6657ee;
+  --accent-hover: #5544d6;
+  --accent-fg: #ffffff;
+  --accent-tint: color-mix(in srgb, var(--accent) 12%, transparent);
+  --accent-line: color-mix(in srgb, var(--accent) 40%, transparent);
+
+  --ok: #1f9d5f;
+  --warn: #c67f1f;
+  --danger: #cf4c50;
+  --unknown: #8a8a95;
+  --ok-tint: color-mix(in srgb, var(--ok) 14%, transparent);
+  --warn-tint: color-mix(in srgb, var(--warn) 16%, transparent);
+  --danger-tint: color-mix(in srgb, var(--danger) 14%, transparent);
+
+  --shadow-sm: 0 1px 2px rgba(20, 20, 30, 0.08), 0 1px 3px rgba(20, 20, 30, 0.06);
+  --shadow-md: 0 8px 28px rgba(20, 20, 30, 0.14);
 }
