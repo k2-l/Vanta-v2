@@ -1,0 +1,22 @@
+node_modules
+dist
+dist-ssr
+*.local
+.env
+.env.*
+!.env.example
+
+# Vite
+.vite
+
+# TS build info
+*.tsbuildinfo
+
+# Tauri / Rust（Cargo.lock 应提交，此处不忽略——桌面应用需可复现构建）
+/target
+src-tauri/target
+src-tauri/gen
+
+# Editor
+.DS_Store
+*.log

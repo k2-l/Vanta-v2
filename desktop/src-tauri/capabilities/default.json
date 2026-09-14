@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "主窗口最小能力集：只放行 core 默认权限。所有远程网络由 Rust BackendGateway 发起，不启用 http/shell/fs 插件的宽泛 scope（方案 §14.1）。",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging"
+  ]
+}

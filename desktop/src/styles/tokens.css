@@ -1,0 +1,74 @@
+/**
+ * 设计 tokens——统一设计系统的基线（方案 §7 styles/、§21 体验）。
+ * 深浅色都显式定义，避免 WebView 借宿主主题。
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* 中性 */
+  --bg: #f7f7f8;
+  --bg-elevated: #ffffff;
+  --bg-inset: #efeff1;
+  --border: #e2e2e5;
+  --border-strong: #cfcfd4;
+  --fg: #1a1a1e;
+  --fg-muted: #6b6b74;
+  --fg-subtle: #9a9aa3;
+
+  /* 品牌 / 强调 */
+  --accent: #4f46e5;
+  --accent-fg: #ffffff;
+  --accent-hover: #4338ca;
+
+  /* 语义（连接状态 / 审批 / 预算） */
+  --ok: #16a34a;
+  --warn: #d97706;
+  --danger: #dc2626;
+  --unknown: #6b7280;
+
+  /* 尺度 */
+  --radius: 8px;
+  --radius-sm: 6px;
+  --radius-lg: 12px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+/* 显式深色（toggle 胜出，两个方向都覆盖）。 */
+:root[data-theme="dark"] {
+  --bg: #0f0f11;
+  --bg-elevated: #17171a;
+  --bg-inset: #1e1e22;
+  --border: #2a2a30;
+  --border-strong: #3a3a42;
+  --fg: #f2f2f4;
+  --fg-muted: #9a9aa3;
+  --fg-subtle: #6b6b74;
+  --accent: #6366f1;
+  --accent-hover: #7c7ef0;
+}
+
+/* 系统深色（未显式选择 light 时）。 */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f0f11;
+    --bg-elevated: #17171a;
+    --bg-inset: #1e1e22;
+    --border: #2a2a30;
+    --border-strong: #3a3a42;
+    --fg: #f2f2f4;
+    --fg-muted: #9a9aa3;
+    --fg-subtle: #6b6b74;
+    --accent: #6366f1;
+    --accent-hover: #7c7ef0;
+  }
+}

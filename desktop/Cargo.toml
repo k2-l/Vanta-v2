@@ -1,0 +1,13 @@
+# 虚拟工作区：让 cargo / rust-analyzer 从 desktop/ 根即可解析 Rust Core。
+# Tauri CLI 仍以 src-tauri/Cargo.toml 为目标；工作区把 target 统一到 desktop/target。
+[workspace]
+members = ["src-tauri"]
+resolver = "2"
+
+# 发布 profile 必须定义在工作区根（成员级会被忽略并告警）。
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

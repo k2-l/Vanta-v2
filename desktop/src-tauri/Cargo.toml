@@ -1,0 +1,34 @@
+[package]
+name = "vanta-desktop"
+version = "0.0.0"
+description = "Vanta 桌面瘦客户端（Tauri Core）"
+authors = ["Vanta"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+# Tauri 2：库入口，桌面/移动共用。
+name = "vanta_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["sync", "time", "rt-multi-thread", "macros"] }
+# 后端网关：REST（G0）+ 后续 SSE/WS。rustls 避免 openssl 系统依赖。
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+# 凭据：系统钥匙串（JWT/口令永不回传 WebView）。
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+uuid = { version = "1", features = ["v4"] }
+log = "0.4"
+
+[features]
+# 生产默认使用自定义协议；此 flag 供 CI 定制。
+custom-protocol = ["tauri/custom-protocol"]
+
+# 注：[profile.release] 定义在工作区根 desktop/Cargo.toml（成员级会被 cargo 忽略）。
