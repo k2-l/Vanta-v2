@@ -11,7 +11,9 @@ cors_origins = [
     "http://127.0.0.1:5173",
     "https://localhost:5173",
     "https://127.0.0.1:5173",
-    "https://43.199.203.176",
+    "tauri://localhost",
+    "https://tauri.localhost",
+    "http://tauri.localhost"
 ]
 
 [auth]

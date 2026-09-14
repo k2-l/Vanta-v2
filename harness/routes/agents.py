@@ -9,11 +9,13 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from harness.app.auth import require_auth
+from harness.contracts.models import ProviderName, normalize_provider_name
 
 router = APIRouter(prefix="/v1", tags=["agents"])
 
@@ -71,7 +73,7 @@ def _write_agent(name: str, meta: dict, body: str) -> None:
     agent_dir.mkdir(parents=True, exist_ok=True)
 
     lines = []
-    for key in ["name", "description", "model"]:
+    for key in ["name", "description", "model", "provider"]:
         if key in meta and meta[key]:
             lines.append(f"{key}: {meta[key]}")
     if "tools" in meta and meta["tools"]:
@@ -120,8 +122,10 @@ def _list_agents() -> list[dict]:
                 "name": name,
                 "description": meta.get("description", ""),
                 "model": meta.get("model", ""),
+                "provider": meta.get("provider"),
                 "tools": meta.get("tools", []),
                 "skills": meta.get("skills", []),
+                "enable_critic": meta.get("enable_critic", False),
             }
         )
     return agents
@@ -153,10 +157,16 @@ class AgentPatch(BaseModel):
     tools: list[str] | None = None
     skills: list[str] | None = None
     model: str | None = None
+    provider: ProviderName | None = None
     max_tokens: int | None = None
     temperature: float | None = None
     allow_autonomous: bool | None = None
     enable_critic: bool | None = None
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _normalize_provider(cls, value: object) -> ProviderName | None:
+        return normalize_provider_name(value)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -165,12 +175,12 @@ class AgentPatch(BaseModel):
 
 
 @router.get("/agents")
-async def list_agents(_: dict = Depends(require_auth)) -> list[dict]:
+async def list_agents(_: Annotated[dict, Depends(require_auth)]) -> list[dict]:
     return _list_agents()
 
 
 @router.get("/agents/{agent_id}")
-async def get_agent(agent_id: str, _: dict = Depends(require_auth)) -> dict:
+async def get_agent(agent_id: str, _: Annotated[dict, Depends(require_auth)]) -> dict:
     parsed = _read_agent(agent_id)
     if parsed is None:
         raise HTTPException(404, "Agent 不存在")
@@ -181,21 +191,31 @@ async def get_agent(agent_id: str, _: dict = Depends(require_auth)) -> dict:
         "description": meta.get("description", ""),
         "content": body,
         "model": meta.get("model", ""),
+        "provider": meta.get("provider"),
         "tools": meta.get("tools", []),
         "skills": meta.get("skills", []),
+        "enable_critic": meta.get("enable_critic", False),
         "max_tokens": meta.get("max_tokens", 8192),
         "temperature": meta.get("temperature", 0.5),
         "allow_autonomous": meta.get("allow_autonomous", False),
-        "enable_critic": meta.get("enable_critic", False),
     }
 
 
 @router.post("/agents/register", status_code=201)
-async def register_agent(req: RegisterAgentRequest, _: dict = Depends(require_auth)) -> dict:
+async def register_agent(
+    req: RegisterAgentRequest,
+    _: Annotated[dict, Depends(require_auth)],
+) -> dict:
     meta, body = _parse_agent_md(req.md)
     name = (meta.get("name") or "").strip()
     if not name:
         raise HTTPException(400, "frontmatter 缺少 name 字段")
+    try:
+        provider = normalize_provider_name(meta.get("provider"))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    if provider is not None:
+        meta["provider"] = provider
 
     _write_agent(name, meta, body)
     _invalidate_caches()
@@ -206,13 +226,19 @@ async def register_agent(req: RegisterAgentRequest, _: dict = Depends(require_au
         "description": meta.get("description", ""),
         "content": body,
         "model": meta.get("model", ""),
+        "provider": meta.get("provider"),
         "tools": meta.get("tools", []),
         "skills": meta.get("skills", []),
+        "enable_critic": meta.get("enable_critic", False),
     }
 
 
 @router.patch("/agents/{agent_id}")
-async def update_agent(agent_id: str, patch: AgentPatch, _: dict = Depends(require_auth)) -> dict:
+async def update_agent(
+    agent_id: str,
+    patch: AgentPatch,
+    _: Annotated[dict, Depends(require_auth)],
+) -> dict:
     parsed = _read_agent(agent_id)
     if parsed is None:
         raise HTTPException(404, "Agent 不存在")
@@ -233,6 +259,11 @@ async def update_agent(agent_id: str, patch: AgentPatch, _: dict = Depends(requi
         meta["skills"] = patch.skills
     if patch.model is not None:
         meta["model"] = patch.model
+    if "provider" in patch.model_fields_set:
+        if patch.provider is None:
+            meta.pop("provider", None)
+        else:
+            meta["provider"] = patch.provider
     if patch.max_tokens is not None:
         meta["max_tokens"] = patch.max_tokens
     if patch.temperature is not None:
@@ -252,13 +283,15 @@ async def update_agent(agent_id: str, patch: AgentPatch, _: dict = Depends(requi
         "description": meta.get("description", ""),
         "content": body,
         "model": meta.get("model", ""),
+        "provider": meta.get("provider"),
         "tools": meta.get("tools", []),
         "skills": meta.get("skills", []),
+        "enable_critic": meta.get("enable_critic", False),
     }
 
 
 @router.delete("/agents/{agent_id}", status_code=204)
-async def delete_agent(agent_id: str, _: dict = Depends(require_auth)) -> None:
+async def delete_agent(agent_id: str, _: Annotated[dict, Depends(require_auth)]) -> None:
     if not _agent_dir(agent_id).is_dir():
         raise HTTPException(404, "Agent 不存在")
     _delete_agent_dir(agent_id)
@@ -266,7 +299,7 @@ async def delete_agent(agent_id: str, _: dict = Depends(require_auth)) -> None:
 
 
 @router.get("/agents/{agent_id}/deps")
-async def agent_dep_tree(agent_id: str, _: dict = Depends(require_auth)) -> dict:
+async def agent_dep_tree(agent_id: str, _: Annotated[dict, Depends(require_auth)]) -> dict:
     """文件系统模式下无依赖树概念，返回空"""
     parsed = _read_agent(agent_id)
     if parsed is None:

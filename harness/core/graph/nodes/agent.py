@@ -5,23 +5,32 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
-from harness.core.context.budget import record_usage
+from harness.core.context.budget import BudgetExceeded, check_budget, record_usage
 from harness.core.context.summarize import _extract_text
 from harness.core.foundation.errors import classify_error
+from harness.core.foundation.internal_sections import strip_internal_sections
 from harness.core.foundation.state import PenAgentState
 from harness.core.foundation.tokens import count_tokens
 from harness.core.graph.models import _bound_model_cache, _get_base_model
+from harness.core.graph.providers import (
+    extract_usage,
+    resolve_provider,
+    supports_prompt_cache,
+    supports_thinking,
+)
 from harness.infra.logging import log
 from harness.infra.metrics import inc as _inc
 from harness.infra.settings import get_settings
 from harness.tools.registry import registry
 
 # 预编译正则 — 在热路径（每轮 agent 调用、每条用户消息）中避免重复编译
-_SCRATCHPAD_RE = re.compile(r"<scratchpad>(.*?)</scratchpad>", re.DOTALL)
-_SUBGOAL_RE = re.compile(r"<subgoal>(.*?)</subgoal>", re.DOTALL)
+_SCRATCHPAD_RE = re.compile(
+    r"<scratchpad\b[^>]*>(.*?)</scratchpad\s*>", re.DOTALL | re.IGNORECASE
+)
+_SUBGOAL_RE = re.compile(r"<subgoal\b[^>]*>(.*?)</subgoal\s*>", re.DOTALL | re.IGNORECASE)
 
 SCRATCHPAD_SYSTEM_HINT = (
     "\n\n# Scratchpad\n"
@@ -51,7 +60,7 @@ _ORCHESTRATOR_HINT = (
     "你是多 Agent 系统的**主调度代理**。"
     "遇到需要专业能力的任务时，使用 `Agent` 工具把任务派发给对应专家 Agent，"
     "不要自己执行细节任务。\n"
-    "遇到复杂任务先思考：能否拆分为 2-4 个独立子任务？再决定调度方式：\n"
+    "遇到复杂任务先思考：能否拆分为 2-3 个独立子任务？再决定调度方式：\n"
     "- **并行**：互相独立的子任务 → 同一轮回复中调用多个 `Agent`\n"
     "- **串行**：后一个子任务依赖前一个结果 → 把前一个结果通过 `context` 参数传入下一个 `Agent`\n"
     "- **委托协调**：复杂流程可派给具有调度能力的指挥官 Agent，由它负责内部调度\n"
@@ -140,43 +149,52 @@ async def agent_node(state: PenAgentState, config: RunnableConfig) -> dict:
     s = get_settings()
     sid = state.get("session_id", "_anon")
 
-    thinking_budget = s.thinking_budget_mid if s.enable_extended_thinking else None
+    # 主代理模型 provider：tier(mid) 显式覆盖优先，否则按模型名智能推断。
+    provider = resolve_provider(s.model_mid_provider, s.model_mid)
+    # thinking 为 Anthropic 专属：非 Anthropic provider 一律不带 thinking 预算。
+    thinking_budget = (
+        s.thinking_budget_mid
+        if s.enable_extended_thinking and supports_thinking(provider)
+        else None
+    )
 
     # 工具列表：static 常驻集 + 经 tool_search 披露的 dynamic 工具（按名取回）。
     # static 子集缓存在 registry 中（工具集不变时零重建）；disclosed 部分随会话累积。
     disclosed = state.get("disclosed_tools") or []
     lc_tools = registry.lc_tools_static() + registry.get_langchain(disclosed)
     _bound_key = (
+        provider,
         s.model_mid,
-        s.anthropic_api_key,
-        s.anthropic_base_url,
         s.max_tokens_per_turn,
         thinking_budget,
         registry.tools_hash(),
         # 披露维度：已解锁工具集变化时 rebind，使新披露工具生效。
         tuple(sorted(disclosed)),
     )
+    base_model = _get_base_model(
+        s.model_mid,
+        s.max_tokens_per_turn,
+        thinking_budget,
+        provider,
+    )
     if _bound_key not in _bound_model_cache:
-        base_model = _get_base_model(
-            s.model_mid,
-            s.anthropic_api_key,
-            s.anthropic_base_url,
-            s.max_tokens_per_turn,
-            thinking_budget,
-        )
         _bound_model_cache[_bound_key] = base_model.bind_tools(lc_tools) if lc_tools else base_model
         if len(_bound_model_cache) > 32:
             oldest = next(iter(_bound_model_cache))
             del _bound_model_cache[oldest]
     else:
         _inc("tool.model_cache")
-    model = _bound_model_cache[_bound_key]
+    invocation_tokens = state.get("invocation_tokens", 0)
+    token_limit = state.get("token_limit", s.main_agent_token_limit)
+    force_finalize = state.get("force_finalize", False) or invocation_tokens >= token_limit
+    model = base_model if force_finalize else _bound_model_cache[_bound_key]
 
     # system 三段切分：稳定段（静态指令 + turn 级稳定的画像/记忆/技能）带 cache_control 断点，
     # 每轮易变的 scratchpad/subgoal 落在断点之后。cache_control 是 Anthropic 结构标准字段，
     # 透传给下游端点即可——DeepSeek 等 Anthropic 结构兼容端点实测支持（HTTP 200 + cache_read
     # 命中）；由 enable_prompt_cache 按端点能力控制，若某端点收到该字段会报错再关此开关。
-    use_cache = s.enable_prompt_cache
+    # cache_control 为 Anthropic 结构专属：非 Anthropic provider 强制关闭，避免 OpenAI 端点报错。
+    use_cache = s.enable_prompt_cache and supports_prompt_cache(provider)
     system_content: Any = _build_system_blocks(state, cache=use_cache)
     # 供 usage 缺失时的本地 token 估算：cache 模式下 system_content 是 block 列表，拼各 text。
     _system_text = (
@@ -186,24 +204,28 @@ async def agent_node(state: PenAgentState, config: RunnableConfig) -> dict:
     )
     system_msg: SystemMessage = SystemMessage(content=system_content)
     messages = [system_msg] + list(state.get("messages", []))
+    if force_finalize and not state.get("force_finalize", False):
+        messages.append(
+            HumanMessage(
+                content="[⚙系统] 当前主代理的独立 token 预算已用尽。请停止调用工具，立即总结已有结果。"
+            )
+        )
 
     try:
+        await check_budget(sid)
         response = await model.ainvoke(messages, config=config)
 
-        # 记录用量 — 用 "in" 检查避免 dict.get(key, default) 的 eager 求值：
-        # default 表达式总是被计算，即使 key 存在也会白跑 tiktoken。
-        usage = getattr(response, "response_metadata", {}).get("usage", {})
-        in_t = usage["input_tokens"] if "input_tokens" in usage else count_tokens(_system_text)
+        # 记录用量 — 跨 provider 归一（优先 usage_metadata）；缺失时本地估算兜底。
+        raw_in, raw_out, cache_read, cache_created = extract_usage(response)
+        in_t = raw_in if raw_in is not None else count_tokens(_system_text)
         out_t = (
-            usage["output_tokens"]
-            if "output_tokens" in usage
+            raw_out
+            if raw_out is not None
             else count_tokens(
                 response.content if isinstance(response.content, str) else str(response.content)
             )
         )
         await record_usage(sid, s.model_mid, in_t, out_t)
-        cache_read = usage.get("cache_read_input_tokens", 0)
-        cache_created = usage.get("cache_creation_input_tokens", 0)
         if cache_read or cache_created:
             log.info(
                 "agent.cache_hit",
@@ -235,6 +257,10 @@ async def agent_node(state: PenAgentState, config: RunnableConfig) -> dict:
                 )
                 log.info("agent.subgoal_declared", subgoal=text[:80], total=len(active_subgoals))
 
+        # 图状态、后续流式收尾和持久化只保留公开正文；工具调用结构保持不变。
+        public_content = strip_internal_sections(content_str)
+        response = response.model_copy(update={"content": public_content})
+
         log.info(
             "agent.ok",
             tool_calls=len(response.tool_calls or []),
@@ -247,12 +273,19 @@ async def agent_node(state: PenAgentState, config: RunnableConfig) -> dict:
         return {
             "messages": [response],
             "token_count": new_token_count,
+            "invocation_tokens": invocation_tokens + in_t + out_t,
             "scratchpad": scratchpad,
             "active_subgoals": active_subgoals,
             "error": None,
             "error_type": None,
+            "force_finalize": force_finalize,
         }
 
+    except BudgetExceeded as exc:
+        return {
+            "error": str(exc),
+            "error_type": f"BUDGET_{exc.kind}",
+        }
     except Exception as exc:  # noqa: BLE001
         err = str(exc)
         log.warning("agent.error", exc=err[:200])

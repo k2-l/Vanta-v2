@@ -9,6 +9,29 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal, TypeAlias, cast
+
+ProviderName: TypeAlias = Literal["anthropic", "openai"]
+VALID_PROVIDER_NAMES: frozenset[str] = frozenset({"anthropic", "openai"})
+
+
+def normalize_provider_name(value: object, *, allow_none: bool = True) -> ProviderName | None:
+    """Normalize and validate a model API provider name.
+
+    Empty values are treated as an omitted override when ``allow_none`` is true.
+    Non-empty unknown values fail fast so an intended provider pin cannot silently
+    route prompts to a different vendor.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        if allow_none:
+            return None
+        raise ValueError("provider 不能为空")
+    if not isinstance(value, str):
+        raise ValueError("provider 必须是字符串（anthropic | openai）")
+    normalized = value.strip().lower()
+    if normalized not in VALID_PROVIDER_NAMES:
+        raise ValueError(f"不支持的 provider: {value!r}（仅支持 anthropic | openai）")
+    return cast(ProviderName, normalized)
 
 # ═══════════════════════════════════════════════════════════
 # L1 · 轻量索引项
@@ -37,6 +60,7 @@ class EntityFull:
     meta: EntityMeta
     content: str  # SKILL.md / AGENT.md 正文
     model: str | None = None
+    provider: ProviderName | None = None  # 手工指定模型接口协议；留空按 model 名智能推断
     path: str = ""  # 实体目录；L3 渐进披露（references/ 等）靠它定位
 
 
@@ -45,10 +69,11 @@ class AgentFull(EntityFull):
     """Agent 全文。字段对齐 Claude Code subagent frontmatter。
 
     CC 标准字段：name/description + disable-model-invocation/user-invocable（在 meta）·
-    model（在基类）· tools。
+    model（在基类）· tools；Vanta 扩展字段 enable_critic。
     """
 
     tools: list[str] = field(default_factory=list)  # CC: 子 agent 可用工具白名单
+    enable_critic: bool = False
 
 
 @dataclass(frozen=True)

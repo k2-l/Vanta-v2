@@ -6,9 +6,7 @@
  */
 
 import { fetchEventSource } from "@microsoft/fetch-event-source";
-import { authHeader, useAuth } from "@/store/auth";
-
-const BASE = (import.meta.env.VITE_API_BASE as string) || window.location.origin;
+import { authHeader, serverBase, useAuth } from "@/store/auth";
 
 // 后端事件类型对照（agent/events.py）
 export type HarnessEvent =
@@ -41,6 +39,7 @@ export function chatStream(
   handlers: ChatStreamHandlers
 ): () => void {
   const ctrl = new AbortController();
+  const BASE = serverBase();  // 运行期解析（每次开流时取当前后端地址）
 
   // Guard against onClose being called more than once.
   // Normal path: done event → close() + ctrl.abort() (skips onclose callback).

@@ -26,6 +26,9 @@ async def run_sub_agent(
     depth: int,
     session_id: str,
     trace_id: str,
+    invocation_id: str,
+    parent_invocation_id: str,
+    lineage: tuple[str, ...],
 ) -> str:
     """执行子 agent，返回最终文本输出。
 
@@ -51,6 +54,12 @@ async def run_sub_agent(
     initial_state: SubAgentState = {
         "messages": [HumanMessage(content=user_content)],
         "session_id": session_id,
+        "invocation_id": invocation_id,
+        "parent_invocation_id": parent_invocation_id,
+        "agent_lineage": lineage,
+        "invocation_tokens": 0,
+        "token_limit": s.sub_agent_token_limit,
+        "force_finalize": False,
         "agent_name": agent.meta.name,
         "agent_depth": depth,
         "tool_logs": [],
@@ -60,6 +69,8 @@ async def run_sub_agent(
         "error_type": None,
         "recovery_attempts": 0,
         "max_recovery_attempts": s.sub_agent_max_recovery_attempts,
+        "critic_attempts": 0,
+        "critic_passed": False,
         "execution_env": exec_env_str,
         "trace_id": trace_id,
     }
@@ -84,7 +95,15 @@ async def run_sub_agent(
                 "on_tool_start",
                 "on_tool_end",
             ):
-                await queue.put({"sub_agent": agent.meta.name, "event": ev})
+                await queue.put(
+                    {
+                        "sub_agent": agent.meta.name,
+                        "invocation_id": invocation_id,
+                        "parent_invocation_id": parent_invocation_id,
+                        "depth": depth,
+                        "event": ev,
+                    }
+                )
 
         # 从 LangGraph on_chain_end 事件捕获最终状态
         if ev.get("event") == "on_chain_end" and ev.get("name") == "LangGraph":

@@ -47,8 +47,18 @@ def count_messages_tokens(messages: list[Any]) -> int:
 
 
 def estimate_tokens(text: str) -> int:
-    """廉价 token 估算（len//4），仅供观测/日志；精确边界仍用 count_tokens。"""
-    return max(1, len(text) // 4) if text else 0
+    """廉价、CJK 感知的 token 估算；精确边界仍用 count_tokens。"""
+    if not text:
+        return 0
+    cjk = sum(
+        1
+        for char in text
+        if "\u3400" <= char <= "\u9fff"
+        or "\u3040" <= char <= "\u30ff"
+        or "\uac00" <= char <= "\ud7af"
+    )
+    non_cjk = len(text) - cjk
+    return max(1, (cjk * 2 + 2) // 3 + non_cjk // 4)
 
 
 def estimate_messages_tokens(messages: list[Any]) -> int:
@@ -57,10 +67,14 @@ def estimate_messages_tokens(messages: list[Any]) -> int:
     for m in messages:
         c = getattr(m, "content", None)
         if isinstance(c, str):
-            total += len(c)
+            total += estimate_tokens(c)
         elif isinstance(c, list):
-            total += sum(len(b.get("text", "") or str(b)) for b in c if isinstance(b, dict))
-    return total // 4
+            total += sum(
+                estimate_tokens(b.get("text", "") or str(b))
+                for b in c
+                if isinstance(b, dict)
+            )
+    return total
 
 
 def truncate_to_tail_tokens(text: str, max_tokens: int) -> str:

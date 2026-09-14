@@ -123,7 +123,7 @@ async def preprocess_node(state: PenAgentState, config: RunnableConfig) -> dict:
             _load_dep_context(),
         )
 
-    # Token 估算：廉价 len//4 代替全量 tiktoken，仅供观测/日志，不参与控制流。
+    # Token 估算：廉价 CJK 感知近似，仅供观测/日志，不参与控制流。
     token_count = estimate_messages_tokens(_msgs)
     token_count += (
         estimate_tokens(state.get("rolling_summary", "") or "")

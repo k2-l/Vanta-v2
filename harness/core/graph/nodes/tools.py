@@ -16,6 +16,8 @@ from harness.core.context.summarize import _compress_context
 from harness.core.foundation.errors import classify_error, most_severe_error_type
 from harness.core.foundation.registry import LRUDict
 from harness.core.foundation.state import PenAgentState
+from harness.core.graph.providers import resolve_provider
+from harness.core.graph.subagent.context import bind_tool_call_id
 from harness.core.graph.tool_exec import (
     collect_tool_results,
     disclosed_from_tool_calls,
@@ -50,7 +52,6 @@ async def _execute_tool_call(
     _s,
     session_id: str,
     sem: asyncio.Semaphore,
-    failure_counts: dict[str, int],
     trace_id: str,
 ) -> tuple[ToolMessage, list[str], str | None]:
     """Execute a single tool call. Returns (ToolMessage, logs, error_str)."""
@@ -71,8 +72,7 @@ async def _execute_tool_call(
                 _ctx,
                 target_chars=_s.context_summary_target_chars,
                 model_name=_s.model_low,
-                api_key=_s.anthropic_api_key or None,
-                base_url=_s.anthropic_base_url or None,
+                provider=resolve_provider(_s.model_low_provider, _s.model_low),
             )
             if isinstance(tool_input, dict):
                 tool_input = {**tool_input, "context": _compressed}
@@ -104,17 +104,18 @@ async def _execute_tool_call(
                 )
 
     # 委托共享内核（主图现在也带 per-tool 超时）
-    content, error_code, error_str, flags, core_logs = await execute_tool_core(
-        tool_name,
-        tool_input,
-        sem=sem,
-        timeout=_s.tool_timeout_seconds,
-        max_output_chars=_s.max_tool_output_chars,
-        log_event="tool.exec",
-        metric_prefix="tool.exec",
-        trace_id=trace_id,
-        session_id=session_id,
-    )
+    with bind_tool_call_id(call_id):
+        content, error_code, error_str, flags, core_logs = await execute_tool_core(
+            tool_name,
+            tool_input,
+            sem=sem,
+            timeout=_s.tool_timeout_seconds,
+            max_output_chars=_s.max_tool_output_chars,
+            log_event="tool.exec",
+            metric_prefix="tool.exec",
+            trace_id=trace_id,
+            session_id=session_id,
+        )
     local_logs.extend(core_logs)
 
     # 成功则写缓存（策略外壳，保留）
@@ -125,16 +126,10 @@ async def _execute_tool_call(
         while len(scache) > _MAX_CACHE_ENTRIES_PER_SESSION:
             scache.popitem(last=False)
 
-    # 失败计数 + 提示注入（策略外壳，保留）
+    # 注册缺失可立即给出固定提示；累计次数提示需在并发结果合并后生成。
     if error_str is not None:
-        new_count = failure_counts.get(tool_name, 0) + 1
         if error_code == "COMMAND_NOT_FOUND":
             content += "\n[提示] 该工具未注册，请询问用户是否需要安装或启用该工具。"
-        elif new_count >= _s.tool_failure_max_retries:
-            content += (
-                f"\n[提示] 工具 {tool_name!r} 已累计失败 {new_count} 次（上限 {_s.tool_failure_max_retries}），"
-                "请改用其他工具替代，不要继续重试该工具。"
-            )
 
     return (
         ToolMessage(
@@ -215,7 +210,6 @@ async def tool_node(state: PenAgentState, config: RunnableConfig) -> dict:
                     _s=_s,
                     session_id=session_id,
                     sem=sem,
-                    failure_counts=_failure_counts_in_state,
                     trace_id=state.get("trace_id", ""),
                 )
             )
@@ -232,6 +226,27 @@ async def tool_node(state: PenAgentState, config: RunnableConfig) -> dict:
         new_failure_counts = dict(_failure_counts_in_state)
         for name in failed:
             new_failure_counts[name] = new_failure_counts.get(name, 0) + 1
+
+        # 同名工具可在同一轮并发失败多次。累计完成后，只在该工具最后一条失败
+        # ToolMessage 上附一次精确计数提示，避免每个 task 都读取相同旧基数。
+        for name in set(failed):
+            final_count = new_failure_counts[name]
+            if final_count < _s.tool_failure_max_retries:
+                continue
+            for index in range(len(tool_calls) - 1, -1, -1):
+                if tool_calls[index].get("name") != name or index >= len(tool_messages):
+                    continue
+                message = tool_messages[index]
+                if not str(message.content).startswith(("[ERROR", "[DENIED", "[CANCELLED")):
+                    continue
+                hint = (
+                    f"\n[提示] 工具 {name!r} 已累计失败 {final_count} 次"
+                    f"（上限 {_s.tool_failure_max_retries}），请改用其他工具替代，不要继续重试该工具。"
+                )
+                tool_messages[index] = message.model_copy(
+                    update={"content": f"{message.content}{hint}"}
+                )
+                break
 
         update: dict[str, Any] = {
             "messages": tool_messages,

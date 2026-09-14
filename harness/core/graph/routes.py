@@ -66,7 +66,8 @@ def route_after_agent(state: PenAgentState) -> str:
     if isinstance(last, AIMessage) and last.tool_calls:
         iterations = state.get("tool_iterations", 0)
         max_iter = state.get("max_tool_iterations", 20)  # <=0 不限
-        if max_iter > 0 and iterations >= max_iter:
+        token_exhausted = state.get("invocation_tokens", 0) >= state.get("token_limit", 1)
+        if token_exhausted or (max_iter > 0 and iterations >= max_iter):
             _inc("route.agent.tool_loop")
             return "recovery"
         _inc("route.agent.tools")
@@ -122,7 +123,10 @@ def build_sub_agent_route_after_agent(enable_critic: bool) -> Callable[[SubAgent
         last = messages[-1] if messages else None
         if isinstance(last, AIMessage) and last.tool_calls:
             _mi = state.get("max_tool_iterations", 10)
-            if _mi > 0 and state.get("tool_iterations", 0) >= _mi:
+            token_exhausted = state.get("invocation_tokens", 0) >= state.get(
+                "token_limit", 1
+            )
+            if token_exhausted or (_mi > 0 and state.get("tool_iterations", 0) >= _mi):
                 return "recovery"
             return "tools"
         if enable_critic:

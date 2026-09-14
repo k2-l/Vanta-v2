@@ -8,10 +8,13 @@ export function LoginPage() {
   const login = useAuth((s) => s.login);
   const error = useAuth((s) => s.loginError);
   const loading = useAuth((s) => s.loading);
+  // 服务器地址：优先上次连接过的地址；否则构建期默认（同源部署留空即可）
+  const savedServer = useAuth((s) => s.serverUrl);
+  const [server, setServer] = useState(savedServer || API_BASE);
 
   async function submit() {
     if (!pwd.trim() || loading) return;
-    await login(pwd, API_BASE);
+    await login(pwd, server);
   }
 
   return (
@@ -43,6 +46,34 @@ export function LoginPage() {
           flexDirection: "column",
           gap: 20,
         }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={{ fontSize: 10, color: "#9BA3AF", letterSpacing: 1.5, textTransform: "uppercase" }}>
+              服务器地址
+            </span>
+            <input
+              type="text"
+              value={server}
+              onChange={(e) => { setServer(e.target.value); }}
+              onKeyDown={(e) => e.key === "Enter" && submit()}
+              placeholder="https://your-backend:8765（同域部署可留空）"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              style={{
+                width: "100%",
+                boxSizing: "border-box",
+                background: "#F9FAFB",
+                border: "1px solid #E2E5EA",
+                borderRadius: 8,
+                padding: "11px 14px",
+                color: "#1A1D23",
+                fontSize: 13,
+                outline: "none",
+                fontFamily: "inherit",
+              }}
+            />
+          </div>
+
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <span style={{ fontSize: 10, color: "#9BA3AF", letterSpacing: 1.5, textTransform: "uppercase" }}>
               访问密码

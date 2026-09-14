@@ -5,10 +5,12 @@
 
 from __future__ import annotations
 
+from langchain_core.messages import HumanMessage
 from sqlalchemy import select as _sa_select
 
+from harness.core.context.summarize import _extract_text
+from harness.core.graph.providers import build_chat_model, resolve_provider
 from harness.infra import db
-from harness.infra.anthropic import build_anthropic_client
 from harness.infra.db import Session as _Session
 from harness.infra.db import session_factory as _session_factory
 from harness.infra.logging import log
@@ -26,22 +28,26 @@ _TITLE_PROMPT = (
 
 
 @with_retry
-async def _ask_title(user_msg: str, assistant_msg: str, model: str) -> str:
-    client = build_anthropic_client(timeout=30.0)
-    resp = await client.messages.create(
-        model=model,
-        # 512 而非 60：deepseek-v4-flash 等推理模型先产出 thinking block，max_tokens
-        # 太小会被思考过程吃光（stop_reason=max_tokens，零 text block），导致标题恒为空、
-        # 自动命名静默失效。标题最终只取前 30 字，留足思考预算后再产出短标题即可。
-        max_tokens=512,
-        messages=[
-            {
-                "role": "user",
-                "content": _TITLE_PROMPT.format(user=user_msg[:500], assistant=assistant_msg[:1000]),
-            }
-        ],
+async def _ask_title(
+    user_msg: str,
+    assistant_msg: str,
+    model: str,
+    provider: str | None = None,
+) -> str:
+    # 跨 provider：显式档位覆盖优先，缺省时再按模型名智能推断。
+    # 512 而非 60：deepseek-v4-flash 等推理模型先产出 thinking block，max_tokens
+    # 太小会被思考过程吃光，导致标题恒为空。标题最终只取前 30 字，留足预算再产短标题。
+    chat = build_chat_model(
+        provider=resolve_provider(provider, model), model=model, max_tokens=512
     )
-    text = "".join(b.text for b in resp.content if b.type == "text").strip()
+    resp = await chat.ainvoke(
+        [
+            HumanMessage(
+                content=_TITLE_PROMPT.format(user=user_msg[:500], assistant=assistant_msg[:1000])
+            )
+        ]
+    )
+    text = _extract_text(resp.content).strip()
     return text.strip("\"'。．. \n\t")[:30]
 
 
@@ -63,20 +69,26 @@ async def maybe_generate_title(session_id: str) -> str | None:
     s = get_settings()
     # model_low 优先；调用失败或返回空时回退到 model_mid（主聊天同款，已知可用）——
     # 兼容第三方端点（如 deepseek）未单独配置 [models].low、低级模型名不被识别的情况。
-    candidates = [s.model_low]
+    candidates = [(s.model_low, s.model_low_provider)]
     if s.model_mid and s.model_mid != s.model_low:
-        candidates.append(s.model_mid)
+        candidates.append((s.model_mid, s.model_mid_provider))
 
     title = ""
-    for i, model in enumerate(candidates):
+    for i, (model, provider) in enumerate(candidates):
         last = i == len(candidates) - 1
         try:
-            title = await _ask_title(user_msgs[0].content, asst_msgs[0].content, model)
+            title = await _ask_title(
+                user_msgs[0].content,
+                asst_msgs[0].content,
+                model,
+                provider,
+            )
         except Exception as exc:  # noqa: BLE001
             log.warning(
                 "titler.failed" if last else "titler.fallback",
                 session_id=session_id,
                 model=model,
+                provider=provider,
                 exc=str(exc)[:200],
             )
             continue

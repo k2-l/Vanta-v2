@@ -5,10 +5,10 @@
  * 所有受保护路由都自动带 Authorization；401 时调 forceLogout。
  */
 
-import { authHeader, useAuth } from "@/store/auth";
+import { authHeader, serverBase, useAuth } from "@/store/auth";
 
-// 本地开发：设置 VITE_API_BASE=http://127.0.0.1:8765（在 web/.env）
-// Docker/nginx 同域代理：留空，请求通过 window.location.origin 走 nginx
+// base URL 现由 store/auth.serverBase() 统一提供（登录时保存的远程地址 → VITE_API_BASE → 同源）。
+// 保留 API_BASE 仅作构建期默认（登录页预填/兜底）；实际请求一律走 serverBase()。
 export const API_BASE = (import.meta.env.VITE_API_BASE as string) || "";
 
 export type Session = {
@@ -44,10 +44,8 @@ async function http<T>(
   path: string,
   init?: RequestInit & { params?: Record<string, string | number> }
 ): Promise<T> {
-  // 本地开发时 VITE_API_BASE 应显式配置；
-  // Docker/nginx 时为空 → 用 window.location.origin 走同域 nginx 代理；
-  // 开发模式未配置时 fallback 到 127.0.0.1:8765
-  const base = API_BASE || window.location.origin;
+  // 运行期解析后端地址（远程桌面客户端 = 登录时保存的 serverUrl；同源部署 = origin）
+  const base = serverBase();
   const url = new URL(base + path);
   if (init?.params) {
     for (const [k, v] of Object.entries(init.params)) {

@@ -10,8 +10,31 @@
 import { create } from "zustand";
 
 const KEY = "harness.auth";
+// 远程后端地址单独持久化（与 token 解耦：登出后仍记住上次连接的服务器，供瘦客户端预填）。
+const SERVER_KEY = "harness.server";
 
 type Stored = { token: string; expiresAt: string };
+
+function normalizeBase(url: string): string {
+  return url.trim().replace(/\/+$/, "");
+}
+
+function loadServerUrl(): string {
+  try {
+    return localStorage.getItem(SERVER_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function saveServerUrl(url: string) {
+  try {
+    if (url) localStorage.setItem(SERVER_KEY, url);
+    else localStorage.removeItem(SERVER_KEY);
+  } catch {
+    /* ignore（隐私模式/禁用存储）*/
+  }
+}
 
 function loadStored(): Stored | null {
   try {
@@ -37,6 +60,7 @@ function saveStored(s: Stored | null) {
 interface AuthState {
   token: string | null;
   expiresAt: string | null;
+  serverUrl: string;              // 远程后端 base URL（空 = 同源，见 serverBase()）
   loginError: string | null;
   loading: boolean;
   login: (password: string, baseUrl: string) => Promise<boolean>;
@@ -49,13 +73,15 @@ export const useAuth = create<AuthState>((set) => {
   return {
     token: stored?.token ?? null,
     expiresAt: stored?.expiresAt ?? null,
+    serverUrl: loadServerUrl(),
     loginError: null,
     loading: false,
 
     login: async (password, baseUrl) => {
       set({ loading: true, loginError: null });
+      const base = normalizeBase(baseUrl);
       try {
-        const resp = await fetch(`${baseUrl}/auth/login`, {
+        const resp = await fetch(`${base}/auth/login`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ password }),
@@ -69,9 +95,11 @@ export const useAuth = create<AuthState>((set) => {
           expires_at: string;
         };
         saveStored({ token: data.token, expiresAt: data.expires_at });
+        saveServerUrl(base);        // 登录成功后固化服务器地址，供后续 API/SSE/WS 复用
         set({
           token: data.token,
           expiresAt: data.expires_at,
+          serverUrl: base,
           loading: false,
           loginError: null,
         });
@@ -110,4 +138,22 @@ export function isAuthed(): boolean {
 export function authHeader(): Record<string, string> {
   const t = useAuth.getState().token;
   return t ? { Authorization: `Bearer ${t}` } : {};
+}
+
+/**
+ * 运行期后端 base URL（单一真相源，API/SSE/WS 都用它）：
+ *   1. 登录时保存的 serverUrl（远程/桌面瘦客户端场景）
+ *   2. 构建期 VITE_API_BASE（本地开发显式配置）
+ *   3. window.location.origin（Docker/nginx 同域部署）
+ */
+export function serverBase(): string {
+  const s = useAuth.getState().serverUrl;
+  if (s) return s;
+  const env = (import.meta.env.VITE_API_BASE as string) || "";
+  return env || window.location.origin;
+}
+
+/** WebSocket base：由 serverBase() 派生（http→ws，https→wss）。 */
+export function wsBase(): string {
+  return serverBase().replace(/^http/, "ws");
 }

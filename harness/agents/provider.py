@@ -9,8 +9,13 @@ import os
 from pathlib import Path
 
 from harness.contracts.base import BaseFileProvider
-from harness.contracts.frontmatter import normalize_str_list
-from harness.contracts.models import AgentFull, EntityFull, EntityMeta
+from harness.contracts.frontmatter import normalize_str_list, parse_bool
+from harness.contracts.models import (
+    AgentFull,
+    EntityFull,
+    EntityMeta,
+    normalize_provider_name,
+)
 
 
 def _agents_root() -> Path:
@@ -31,6 +36,8 @@ class AgentProvider(BaseFileProvider):
             meta=meta,
             content=body,
             model=fm.get("model"),
+            provider=normalize_provider_name(fm.get("provider")),
             path=path,
             tools=normalize_str_list(fm.get("tools")),
+            enable_critic=parse_bool(fm.get("enable_critic")),
         )

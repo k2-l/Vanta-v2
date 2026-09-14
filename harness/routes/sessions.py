@@ -15,6 +15,7 @@ from harness.app.schemas import (
 )
 from harness.core.context.summarize import compact_session_history
 from harness.core.foundation.tokens import count_tokens
+from harness.core.graph.providers import resolve_provider
 from harness.infra import db
 from harness.infra.settings import get_settings
 
@@ -113,8 +114,7 @@ async def compress_preview(session_id: str):
             transcript,
             prev_summary=prev_summary,
             model_name=st.model_low,
-            api_key=st.anthropic_api_key or None,
-            base_url=st.anthropic_base_url or None,
+            provider=resolve_provider(st.model_low_provider, st.model_low),
             max_tokens=st.summarize_max_tokens,
         )
     except Exception as exc:  # noqa: BLE001

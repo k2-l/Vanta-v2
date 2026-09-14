@@ -129,16 +129,21 @@ async def get_budget_status(session_id: str) -> dict:
     """返回预算状态摘要（供前端展示）。"""
     session_used, daily_used = await _fetch_usage(session_id)
     s = get_settings()
+
+    def _percent(used: int, limit: int) -> float:
+        # Settings 已拒绝非正数；这里仍防御旧配置或直接构造的 settings stub。
+        return round(used / limit * 100, 1) if limit > 0 else (100.0 if used else 0.0)
+
     return {
         "session": {
             "used": session_used,
             "limit": s.session_token_limit,
-            "percent": round(session_used / s.session_token_limit * 100, 1),
+            "percent": _percent(session_used, s.session_token_limit),
         },
         "daily": {
             "used": daily_used,
             "limit": s.daily_token_limit,
-            "percent": round(daily_used / s.daily_token_limit * 100, 1),
+            "percent": _percent(daily_used, s.daily_token_limit),
         },
         "context_window": s.model_context_window,
         "compression_threshold": s.context_compression_threshold,

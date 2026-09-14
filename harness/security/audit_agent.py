@@ -16,11 +16,13 @@ import json
 import re
 from typing import Any
 
-from harness.infra.anthropic import build_anthropic_client
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from harness.core.context.summarize import _extract_text
+from harness.core.graph.providers import build_chat_model, resolve_provider
 from harness.infra.logging import log
 from harness.infra.settings import get_settings
 
-_AUDIT_TIMEOUT = 30.0
 _AUDIT_MAX_TOKENS = 256
 
 _AUDIT_SYSTEM = """你是嘤嘤（AI 渗透测试助手）的人机协同审计员。审查 agent 即将执行的工具调用是否会对系统造成实质性损害。
@@ -79,14 +81,15 @@ async def audit_review(
     )[:4000]
 
     try:
-        client = build_anthropic_client(timeout=_AUDIT_TIMEOUT)
-        resp = await client.messages.create(
+        chat = build_chat_model(
+            provider=resolve_provider(s.model_low_provider, s.model_low),
             model=s.model_low,
             max_tokens=_AUDIT_MAX_TOKENS,
-            system=_AUDIT_SYSTEM,
-            messages=[{"role": "user", "content": payload}],
         )
-        text = "".join(b.text for b in resp.content if b.type == "text").strip()
+        resp = await chat.ainvoke(
+            [SystemMessage(content=_AUDIT_SYSTEM), HumanMessage(content=payload)]
+        )
+        text = _extract_text(resp.content).strip()
         data = _extract_decision(text)
         if data is None:
             log.warning("audit_agent.parse_failed", tool_name=tool_name, preview=text[:200])

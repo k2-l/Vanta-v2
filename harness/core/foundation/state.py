@@ -44,6 +44,14 @@ class BaseAgentState(TypedDict):
 
     # ── 会话元数据 ────────────────────────────────────────────────────
     session_id: str
+    invocation_id: str
+    parent_invocation_id: str
+    agent_lineage: tuple[str, ...]
+
+    # 每个 Agent invocation 独立计数；父子/兄弟之间不共享余额。
+    invocation_tokens: int
+    token_limit: int
+    force_finalize: bool
 
     # ── 工具执行日志（每轮重置，供 SSE 事件流使用）─────────────────
     tool_logs: list[str]
@@ -104,7 +112,7 @@ class SubAgentState(BaseAgentState):
 
     # 子代理标识
     agent_name: str  # 当前子 agent 名称
-    agent_depth: int  # 调用深度（1=主代理派发，2=协调者再派发）
+    agent_depth: int  # 调用深度（1=主代理派发，最多到配置的 depth=3）
 
     # ── Critic 质量门（enable_critic 时启用，由 critic_node 写入）───
     critic_attempts: int  # 已重试次数（上限 2，见 critic_node）

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
 from harness.core.foundation.errors import (
@@ -14,6 +14,7 @@ from harness.core.foundation.errors import (
     classify_error,
 )
 from harness.core.foundation.state import PenAgentState
+from harness.core.graph.tool_exec import skipped_tool_messages
 from harness.infra.logging import log
 from harness.infra.settings import get_settings
 
@@ -23,24 +24,42 @@ async def recovery_node(state: PenAgentState, config: RunnableConfig) -> dict:
     error = state.get("error", "") or ""
     error_type = state.get("error_type") or classify_error(error)
 
-    # 步数软上限：迭代超限时注入进展总结请求让 LLM 询问用户；_max_iter<=0 跳过（不限）。
+    # 独立 token/工具步数上限：补齐悬空 tool_use，下一轮切到无工具模型强制收尾。
     _max_iter = state.get("max_tool_iterations")
     if _max_iter is None:
         _max_iter = get_settings().max_tool_iterations
-    if not error and _max_iter > 0 and state.get("tool_iterations", 0) >= _max_iter:
+    token_exhausted = state.get("invocation_tokens", 0) >= state.get("token_limit", 1)
+    if not error and (
+        token_exhausted
+        or (_max_iter > 0 and state.get("tool_iterations", 0) >= _max_iter)
+    ):
         iterations = state.get("tool_iterations", 0)
+        reason = (
+            "当前主代理的独立 token 预算已用尽"
+            if token_exhausted
+            else f"已完成 {iterations} 步工具调用（当前上限 {_max_iter} 步）"
+        )
         soft_limit_msg = HumanMessage(
             content=(
-                f"[⚙系统] 已完成 {iterations} 步工具调用（当前上限 {_max_iter} 步）。\n"
-                "请用中文总结当前任务进展和已完成的内容，然后询问用户：是否继续执行后续步骤？"
+                f"[⚙系统] {reason}。\n"
+                "请停止调用工具，用中文总结当前任务进展和已完成的内容。"
             )
         )
+        pending: list[ToolMessage] = []
+        messages = state.get("messages", [])
+        last = messages[-1] if messages else None
+        if isinstance(last, AIMessage) and last.tool_calls:
+            pending = skipped_tool_messages(last.tool_calls)
         log.info("recovery.soft_limit", iterations=iterations, max_iter=_max_iter)
         return {
-            "messages": [soft_limit_msg],
+            "messages": [*pending, soft_limit_msg],
             "error": None,
-            "error_type": "SOFT_LIMIT_REACHED",
+            "error_type": None,
+            "force_finalize": True,
         }
+
+    if error_type.startswith("BUDGET_"):
+        return {"error": error, "error_type": f"TERMINAL_{error_type}"}
 
     # 结构性错误：不消耗重试次数，由 route_after_recovery 路由到 END
     if error_type in _NON_RETRYABLE_ERRORS:

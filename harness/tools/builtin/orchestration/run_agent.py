@@ -15,8 +15,15 @@ from __future__ import annotations
 from typing import Any
 
 from harness.core.graph.subagent import (
+    child_invocation_id,
+    current_agent_lineage,
+    current_invocation_id,
     current_sub_agent_depth,
+    enter_agent_invocation,
     enter_sub_agent_depth,
+    get_orchestration_context,
+    release_delegation,
+    reserve_delegation,
     run_sub_agent,
 )
 from harness.tools.base import Tool, ToolResult
@@ -31,6 +38,7 @@ class RunAgentTool(Tool):
         "把一个子任务派发给指定的专家 Agent 独立执行，返回其最终输出。\n"
         "- 同一轮次多个 Agent 调用会**并行**执行\n"
         "- 需要串行时（后续任务依赖前一个结果），把前一个结果通过 context 参数传入\n"
+        "- 主代理和子代理均可委派；每个 invocation 最多同时运行 3 个直接子 Agent，最大深度 3\n"
         "- 只能调用已启动（active=true）的 Agent"
     )
     input_schema: dict[str, Any] = {
@@ -63,6 +71,8 @@ class RunAgentTool(Tool):
 
         s = get_settings()
         current_depth = current_sub_agent_depth()
+        parent_id = current_invocation_id()
+        lineage = current_agent_lineage()
 
         # ── 深度限制 ────────────────────────────────────────────────────
         if current_depth >= s.sub_agent_max_depth:
@@ -70,6 +80,12 @@ class RunAgentTool(Tool):
                 error=f"已达到最大调用深度 (depth={current_depth}，上限={s.sub_agent_max_depth})，"
                 f"拒绝继续派发",
                 error_code="DEPTH_LIMIT",
+            )
+
+        if name in lineage:
+            return ToolResult.fail(
+                error=f"检测到 Agent 委派循环：{' → '.join((*lineage, name))}",
+                error_code="DELEGATION_CYCLE",
             )
 
         # ── 加载 Agent 定义（统一协议：EntityProvider.get，直接消费 AgentFull）──
@@ -86,78 +102,96 @@ class RunAgentTool(Tool):
                 error_code="AGENT_NOT_FOUND",
             )
 
-        # ── 递增深度，执行子 agent，执行后自动还原 ───────────────────────
-        import asyncio
-
-        import structlog
-
-        with enter_sub_agent_depth() as new_depth:
-            from harness.infra.logging import log
-
-            log.info("run_agent.start", agent=name, depth=new_depth, task_preview=task[:80])
-
-            # 从调用链获取 session_id / trace_id（通过 LangGraph RunnableConfig
-            # 传递的 configurable 字段；未设置时降级为占位符）
-            ctx = structlog.contextvars.get_contextvars()
-            session_id = ctx.get("session_id", "_anon")
-            trace_id = ctx.get("trace", "")
-
-            _NON_RETRIABLE = (
-                "depth",
-                "budget",
-                "auth",
-                "permission",
-                "not found",
-                "not exist",
-                "DEPTH_LIMIT",
-                "BUDGET_LIMIT",
-                "AUTH_ERROR",
-                "PERMISSION",
+        limit_error = await reserve_delegation(
+            parent_id,
+            s.max_agent_delegations_per_agent,
+        )
+        if limit_error == "DELEGATION_LIMIT":
+            return ToolResult.fail(
+                error=(
+                    f"当前 Agent invocation 最多同时运行 "
+                    f"{s.max_agent_delegations_per_agent} 个子 Agent"
+                ),
+                error_code=limit_error,
+            )
+        if limit_error:
+            return ToolResult.fail(
+                error=f"本轮 Agent invocation 总数已达上限 {s.max_agent_invocations_per_turn}",
+                error_code=limit_error,
             )
 
-            def _is_non_retriable(exc: Exception) -> bool:
-                msg = str(exc).lower()
-                return any(k.lower() in msg for k in _NON_RETRIABLE)
+        # ── 递增深度，执行子 agent；不整图重试，避免重放工具副作用 ────────
+        import structlog
 
-            max_attempts = 3
-            last_exc: Exception | None = None
-            for attempt in range(1, max_attempts + 1):
+        invocation_id = child_invocation_id(parent_id)
+        try:
+            with enter_sub_agent_depth() as new_depth:
+                from harness.infra.logging import log
+
+                log.info(
+                    "run_agent.start",
+                    agent=name,
+                    depth=new_depth,
+                    invocation_id=invocation_id,
+                    task_preview=task[:80],
+                )
+
+                # 从调用链获取 session_id / trace_id（通过 LangGraph RunnableConfig
+                # 传递的 configurable 字段；未设置时降级为占位符）
+                ctx = structlog.contextvars.get_contextvars()
+                session_id = ctx.get("session_id", "_anon")
+                trace_id = ctx.get("trace", "")
+
                 try:
-                    result_text = await run_sub_agent(
-                        agent=agent,
-                        task=task,
-                        context=context,
-                        depth=new_depth,
-                        session_id=session_id,
-                        trace_id=trace_id,
-                    )
+                    orchestration = get_orchestration_context()
+                    with enter_agent_invocation(invocation_id, name):
+                        # 只对主代理直接派发的根子任务做全局并发门控；若父任务持有
+                        # permit 时嵌套子任务也抢同一 semaphore，会形成层级死锁。
+                        if orchestration is None or current_depth > 0:
+                            result_text = await run_sub_agent(
+                                agent=agent,
+                                task=task,
+                                context=context,
+                                depth=new_depth,
+                                session_id=session_id,
+                                trace_id=trace_id,
+                                invocation_id=invocation_id,
+                                parent_invocation_id=parent_id,
+                                lineage=(*lineage, name),
+                            )
+                        else:
+                            async with orchestration.semaphore:
+                                result_text = await run_sub_agent(
+                                    agent=agent,
+                                    task=task,
+                                    context=context,
+                                    depth=new_depth,
+                                    session_id=session_id,
+                                    trace_id=trace_id,
+                                    invocation_id=invocation_id,
+                                    parent_invocation_id=parent_id,
+                                    lineage=(*lineage, name),
+                                )
                     log.info(
-                        "run_agent.done", agent=name, depth=new_depth, output_len=len(result_text)
+                        "run_agent.done",
+                        agent=name,
+                        depth=new_depth,
+                        invocation_id=invocation_id,
+                        output_len=len(result_text),
                     )
                     return ToolResult(ok=True, output=result_text)
                 except Exception as exc:  # noqa: BLE001
-                    last_exc = exc
-                    if _is_non_retriable(exc):
-                        log.error(
-                            "run_agent.error", agent=name, attempt=attempt, exc=str(exc)[:300]
-                        )
-                        return ToolResult.fail(
-                            error=f"子 Agent '{name}' 执行失败：{exc}",
-                            error_code="SUB_AGENT_ERROR",
-                        )
-                    if attempt < max_attempts:
-                        wait = 2 ** (attempt - 1)
-                        log.warning(
-                            "run_agent.retry",
-                            agent=name,
-                            attempt=attempt,
-                            reason=str(exc)[:200],
-                            wait_seconds=wait,
-                        )
-                        await asyncio.sleep(wait)
-
-            log.error("run_agent.error", agent=name, attempt=max_attempts, exc=str(last_exc)[:300])
-            return ToolResult.fail(
-                error=f"子 Agent '{name}' 执行失败（已重试 3 次）：{last_exc}",
-                error_code="SUB_AGENT_ERROR",
-            )
+                    log.error(
+                        "run_agent.error",
+                        agent=name,
+                        depth=new_depth,
+                        invocation_id=invocation_id,
+                        exc=str(exc)[:300],
+                    )
+                    return ToolResult.fail(
+                        error=f"子 Agent '{name}' 执行失败：{exc}",
+                        error_code="SUB_AGENT_ERROR",
+                    )
+        finally:
+            # 直接配额表示并发槽，不是整回合次数；取消、成功或失败都必须释放。
+            await release_delegation(parent_id)

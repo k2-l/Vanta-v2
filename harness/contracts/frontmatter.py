@@ -4,8 +4,7 @@
     <root>/<name>/<filename>      例如 workspace/agents/audit/AGENT.md
 
 解析：split_frontmatter —— 失败时元数据为空，绝不抛异常。
-序列化：to_frontmatter —— 只输出 CC 标准字段（模型即契约）。自定义字段不进模型、
-不参与序列化——经本路径写入即收敛为 CC 标准格式。
+序列化：to_frontmatter —— 输出模型明确承载的字段（CC 标准字段 + Vanta critic 开关）。
 """
 
 from __future__ import annotations
@@ -70,9 +69,9 @@ def normalize_str_list(value: object) -> list[str]:
 
 
 def to_frontmatter(full: EntityFull) -> dict:
-    """EntityFull → CC 标准 frontmatter dict。
+    """EntityFull → 受支持的 frontmatter dict。
 
-    模型只承载 CC 字段，自定义字段不在模型上、也不会被写出——写入即收敛。
+    未进入模型契约的自定义字段不会被写出；Agent 额外支持 Vanta enable_critic。
     与 CC 惯例一致：disable-model-invocation 仅 true 时写出，user-invocable 仅 false 时写出。
     """
     fm: dict[str, object] = {
@@ -85,8 +84,13 @@ def to_frontmatter(full: EntityFull) -> dict:
         fm["user-invocable"] = False
     if full.model:
         fm["model"] = full.model
-    if isinstance(full, AgentFull) and full.tools:
-        fm["tools"] = full.tools
+    if full.provider:
+        fm["provider"] = full.provider
+    if isinstance(full, AgentFull):
+        if full.tools:
+            fm["tools"] = full.tools
+        if full.enable_critic:
+            fm["enable_critic"] = True
     if isinstance(full, SkillFull):
         if full.allowed_tools:
             fm["allowed-tools"] = full.allowed_tools

@@ -6,8 +6,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+
+from harness.contracts.models import ProviderName, normalize_provider_name
 
 
 class TomlConfigSource(PydanticBaseSettingsSource):
@@ -34,6 +36,13 @@ class TomlConfigSource(PydanticBaseSettingsSource):
             result["ANTHROPIC_AUTH_TOKEN"] = anthropic["auth_token"]
         if "base_url" in anthropic:
             result["ANTHROPIC_BASE_URL"] = anthropic["base_url"]
+
+        # [openai] 节 — OpenAI 协议凭据（含任意 OpenAI 兼容端点）
+        openai = data.get("openai", {})
+        if "api_key" in openai:
+            result["OPENAI_API_KEY"] = openai["api_key"]
+        if "base_url" in openai:
+            result["OPENAI_BASE_URL"] = openai["base_url"]
 
         # [server] 节
         server = data.get("server", {})
@@ -124,6 +133,15 @@ class TomlConfigSource(PydanticBaseSettingsSource):
             result["model_mid"] = models["mid"]
         if "low" in models:
             result["model_low"] = models["low"]
+        # 三档可选 provider 覆盖（手工选择）；缺省时按模型名智能推断
+        if "default_provider" in models:
+            result["default_provider"] = models["default_provider"]
+        if "high_provider" in models:
+            result["model_high_provider"] = models["high_provider"]
+        if "mid_provider" in models:
+            result["model_mid_provider"] = models["mid_provider"]
+        if "low_provider" in models:
+            result["model_low_provider"] = models["low_provider"]
 
         # [database] 节
         database = data.get("database", {})
@@ -166,6 +184,10 @@ class TomlConfigSource(PydanticBaseSettingsSource):
             result["session_token_limit"] = limits["session_token_limit"]
         if "daily_token_limit" in limits:
             result["daily_token_limit"] = limits["daily_token_limit"]
+        if "main_agent_token_limit" in limits:
+            result["main_agent_token_limit"] = limits["main_agent_token_limit"]
+        if "sub_agent_token_limit" in limits:
+            result["sub_agent_token_limit"] = limits["sub_agent_token_limit"]
         if "max_concurrent_sessions" in limits:
             result["max_concurrent_sessions"] = limits["max_concurrent_sessions"]
 
@@ -219,6 +241,14 @@ class TomlConfigSource(PydanticBaseSettingsSource):
             result["sub_agent_recursion_limit"] = sub_agent["recursion_limit"]
         if "max_depth" in sub_agent:
             result["sub_agent_max_depth"] = sub_agent["max_depth"]
+        if "max_delegations_per_agent" in sub_agent:
+            result["max_agent_delegations_per_agent"] = sub_agent[
+                "max_delegations_per_agent"
+            ]
+        if "max_invocations_per_turn" in sub_agent:
+            result["max_agent_invocations_per_turn"] = sub_agent[
+                "max_invocations_per_turn"
+            ]
 
         # 过滤掉空字符串（避免覆盖 Python 默认值）
         return {k: v for k, v in result.items() if v != ""}
@@ -231,6 +261,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="HARNESS_",
         extra="ignore",
+        populate_by_name=True,
     )
 
     @classmethod
@@ -253,15 +284,25 @@ class Settings(BaseSettings):
     anthropic_auth_token: str | None = Field(default=None, alias="ANTHROPIC_AUTH_TOKEN")
     anthropic_base_url: str | None = Field(default=None, alias="ANTHROPIC_BASE_URL")
 
+    # === OpenAI 协议凭据（多 API 兼容；含任意 OpenAI 兼容端点，通过 base_url 指向）===
+    openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
+    openai_base_url: str | None = Field(default=None, alias="OPENAI_BASE_URL")
+
     api_host: str = "127.0.0.1"
     api_port: int = 8765
 
-    # CORS：开发期 Vite dev server 默认 :5173；生产期可加自定义域名
+    # CORS：开发期 Vite dev server 默认 :5173；生产期可加自定义域名。
+    # Tauri 桌面瘦客户端的 webview origin 也在此放行（v2：macOS/Linux 为 tauri://localhost，
+    # Windows 为 http(s)://tauri.localhost；dev 默认端口 :1420）。凭据走 Authorization 头非 cookie。
     cors_origins: list[str] = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "https://localhost:5173",
         "https://127.0.0.1:5173",
+        "http://localhost:1420",
+        "tauri://localhost",
+        "http://tauri.localhost",
+        "https://tauri.localhost",
     ]
 
     # 鉴权（云部署必填）
@@ -319,6 +360,13 @@ class Settings(BaseSettings):
     model_mid:  str = "claude-sonnet-4-6"         # 正常：主代理、子 agent 默认
     model_low:  str = "claude-haiku-4-5-20251001" # 低级：摘要、标题、旁路压缩
 
+    # 多 API 路由：default_provider 为智能推断失败时的兜底 provider（anthropic | openai）；
+    # 三档可各自显式指定 provider（手工选择），留空则按模型名前缀智能推断。
+    default_provider: ProviderName = "anthropic"
+    model_high_provider: ProviderName | None = None
+    model_mid_provider:  ProviderName | None = None
+    model_low_provider:  ProviderName | None = None
+
     # Extended thinking（仅官方 Anthropic 端点确认支持，第三方兼容代理可能不支持 thinking 参数）
     # 主开关默认关闭；某档 budget 设为 0 时即使总开关打开也不对该档启用
     enable_extended_thinking: bool = False
@@ -366,10 +414,10 @@ class Settings(BaseSettings):
     enable_prompt_cache: bool = False
 
     # 单次 LLM 响应最大 token 数
-    max_tokens_per_turn: int = 4096
+    max_tokens_per_turn: int = Field(default=4096, gt=0)
 
-    # 单次 LLM 响应最多执行的工具数（0 = 不限，由 token 预算兜底；仍受 tool_concurrency 并发约束）
-    max_tool_calls_per_turn: int = 0
+    # 单次 LLM 响应最多执行的工具数（必须为正；仍受 tool_concurrency 并发约束）
+    max_tool_calls_per_turn: int = Field(default=5, gt=0)
 
     # 单工具执行超时（秒）
     tool_timeout_seconds: int = 60
@@ -389,8 +437,11 @@ class Settings(BaseSettings):
     agent_max_parallel: int = Field(default=5, alias="AGENT_MAX_PARALLEL")
 
     # Token 预算（超限后拒绝继续推理）
-    session_token_limit: int = 1_000_000    # tokens / 会话
-    daily_token_limit: int = 10_000_000     # tokens / 天（全局）
+    session_token_limit: int = Field(default=1_000_000, gt=0)  # 全局硬熔断
+    daily_token_limit: int = Field(default=10_000_000, gt=0)   # 全局硬熔断
+    # Agent invocation 独立预算：父子/兄弟不会互相扣减。
+    main_agent_token_limit: int = Field(default=200_000, gt=0)
+    sub_agent_token_limit: int = Field(default=100_000, gt=0)
 
     # 上下文压缩（Context Compression）—— 已改为「用户主动触发」，不再自动进流程。
     # context_compression_enabled 不再驱动任何自动路由（保留字段仅为配置兼容/前端读取）；
@@ -409,8 +460,7 @@ class Settings(BaseSettings):
     # 全局并发：同时运行的 session 上限（防止 DB/API 被打爆）
     max_concurrent_sessions: int = 20
 
-    # LangGraph 图递归深度硬上限（安全网）。max_tool_iterations=0（不限）时即循环硬天花板，
-    # token 预算为主兜底；>0 时须 > 3 + 2*(max_tool_iterations + max_recovery_attempts) + 余量。
+    # LangGraph 图递归深度硬上限（最终安全网），须高于正常工具/恢复循环所需深度。
     # _validate_graph_depth 启动时校验；溢出由 runtime 优雅收尾。
     graph_recursion_limit: int = 500
 
@@ -419,8 +469,8 @@ class Settings(BaseSettings):
     # Rolling Summary 单次摘要调用的最大输出 token 数
     summarize_max_tokens: int = 1024
 
-    # 工具循环检测：agent→tools→agent 最多迭代次数（0 = 不限，由 token 预算 + graph_recursion_limit 兜底）
-    max_tool_iterations: int = 0
+    # 工具循环检测：agent→tools→agent 最多迭代次数（必须为正）
+    max_tool_iterations: int = Field(default=20, gt=0)
 
     # 单个工具累计失败上限（达到后在 ToolMessage 中提示 LLM 换用其他工具）
     tool_failure_max_retries: int = 3
@@ -429,10 +479,13 @@ class Settings(BaseSettings):
     max_recovery_attempts: int = 3
 
     # 子 agent 参数（run_agent 工具调用的下级 agent）
-    sub_agent_max_tool_iterations: int = 10   # 子 agent 工具循环上限（比主代理少）
-    sub_agent_max_recovery_attempts: int = 2  # 子 agent 最大恢复次数
-    sub_agent_recursion_limit: int = 30       # 子 agent 图递归深度上限
-    sub_agent_max_depth: int = 2              # 调用链最大深度（0=主代理，1=子，2=孙）
+    sub_agent_max_tool_iterations: int = Field(default=10, gt=0)
+    sub_agent_max_recovery_attempts: int = Field(default=2, gt=0)
+    sub_agent_recursion_limit: int = Field(default=30, gt=0)
+    sub_agent_max_depth: int = Field(default=3, ge=1)  # 0=主，允许子代理深度 1..3
+    max_agent_delegations_per_agent: int = Field(default=3, gt=0)
+    # 深度 3、每层每 invocation 最多 3 个时，完整委派树最多 3+9+27=39 个子调用。
+    max_agent_invocations_per_turn: int = Field(default=39, gt=0)
 
     # 慢请求日志阈值（秒）；SSE/WS 路由自动豁免
     slow_request_threshold_sec: float = 30.0
@@ -449,15 +502,37 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
+    @field_validator(
+        "default_provider",
+        "model_high_provider",
+        "model_mid_provider",
+        "model_low_provider",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_model_provider(cls, value: object) -> ProviderName | None:
+        return normalize_provider_name(value)
+
     @model_validator(mode="after")
     def _check_credentials(self) -> "Settings":
-        if not (self.anthropic_api_key or self.anthropic_auth_token):
+        # 多 provider：至少配置一个 provider 的凭据即可（允许纯 OpenAI 部署）。
+        # 具体某档模型 provider 与其凭据是否匹配依赖模型名解析，无法在此静态确定，
+        # 交由运行时按 provider 取凭据 + 调用失败反馈（宁可放行，不误伤纯 OpenAI 配置）。
+        if not (self.anthropic_api_key or self.anthropic_auth_token or self.openai_api_key):
             raise ValueError(
-                "必须设置 ANTHROPIC_API_KEY 或 ANTHROPIC_AUTH_TOKEN 之一。\n"
-                "  - 官方 Anthropic：在 data/config.toml 的 [anthropic] 节填写 api_key\n"
-                "  - 第三方兼容服务：填写 api_key + base_url\n"
-                "  - Bearer/OAuth 代理：填写 auth_token\n"
-                "  - 或通过环境变量 ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN 覆盖"
+                "必须至少配置一个模型 provider 的凭据。\n"
+                "  - Anthropic：[anthropic] api_key（官方/第三方兼容 + base_url）或 auth_token（Bearer/OAuth）\n"
+                "  - OpenAI：[openai] api_key（+ 可选 base_url 指向兼容端点）\n"
+                "  - 或用环境变量 ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / OPENAI_API_KEY 覆盖"
+            )
+        full_tree_invocations = sum(
+            self.max_agent_delegations_per_agent**level
+            for level in range(1, self.sub_agent_max_depth + 1)
+        )
+        if self.max_agent_invocations_per_turn < full_tree_invocations:
+            raise ValueError(
+                "max_agent_invocations_per_turn 不能小于按委派上限和深度计算的完整树容量 "
+                f"{full_tree_invocations}"
             )
         return self
 
@@ -471,7 +546,8 @@ def get_settings() -> Settings:
         if p.exists():
             overrides = json.loads(p.read_text(encoding="utf-8"))
             if overrides:
-                s = s.model_copy(update=overrides)
+                # model_copy(update=...) 不执行字段约束；重新校验，避免 0/负数配置潜伏到运行期。
+                s = Settings.model_validate({**s.model_dump(), **overrides})
     except Exception:
         pass
     return s

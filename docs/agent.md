@@ -69,9 +69,10 @@ user-invocable: true
 - **无 `preprocess`**——子 agent 不加载记忆/画像/skill 上下文，从任务描述干净起步。
 - 工具按 `AGENT.md` 的 `tools` 白名单过滤。
 - 自带 `agent → [tools → agent]* → recovery` 循环，可选挂 **critic 质量门**。
-- 循环上限 `sub_agent_max_tool_iterations`（默认 10，内部有界委托护栏）；派发深度 `sub_agent_max_depth`。
+- 循环上限 `sub_agent_max_tool_iterations`（默认 10，内部有界委托护栏）；主/子代理均可委派，每个 invocation 最多同时运行 3 个直接子代理，完成后释放配额，派发深度 `sub_agent_max_depth` 默认为 3。
+- 主代理与每个子代理 invocation 使用独立 token 预算；session/day 额度仅作为全局硬熔断与累计记账。
 
-> 对比：主图工具循环默认**不限**（由 token 预算兜底），子 agent 循环则保留 10 步硬护栏。
+> 对比：主图工具循环默认 20 步，子 agent 循环默认 10 步；两者还分别受 invocation 独立 token 预算约束。
 
 ## `load_agent`：只取角色不派发
 

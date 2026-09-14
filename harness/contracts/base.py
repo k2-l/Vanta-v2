@@ -3,7 +3,7 @@
 子类只需声明 kind / filename / l1_header，并覆写 _full()（字段映射）。
 _meta() 对两域一致，已在基类实现，通常无需覆写。
 读（reload / list_l1 / get）与写（write / delete）均在基类实现；
-写入按 CC 标准字段序列化（to_frontmatter），自定义字段不写入——写入即收敛。
+写入按模型契约支持的字段序列化（to_frontmatter），未知字段不写入。
 """
 
 from __future__ import annotations
@@ -105,14 +105,14 @@ class BaseFileProvider:
         self._ensure()
         return [n for n, m in self._index.items() if not m.disable_model_invocation]
 
-    # ── 写（CC 标准字段；写/删即时更新内存索引） ─────────────
+    # ── 写（受支持字段；写/删即时更新内存索引） ─────────────
     def all_names(self) -> list[str]:
         """全部实体名（含 disable-model-invocation），管理/CRUD 清单用。"""
         self._ensure()
         return list(self._index)
 
     def write(self, name: str, full: EntityFull) -> None:
-        """按 CC 标准写实体（to_frontmatter 只序列化 CC 字段，自定义字段不写入）。"""
+        """按模型契约写实体（to_frontmatter 不序列化未知字段）。"""
         write_entity(self._root, name, self.filename, full)
         if self._loaded:
             self._index[name] = full.meta

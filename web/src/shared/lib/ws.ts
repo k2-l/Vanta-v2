@@ -6,13 +6,8 @@
  */
 
 import { useEffect, useRef } from "react";
-import { useAuth } from "@/store/auth";
+import { useAuth, wsBase } from "@/store/auth";
 import { useChat } from "@/store/chat";
-
-const BASE_WS = (() => {
-  const api = (import.meta.env.VITE_API_BASE as string) || window.location.origin;
-  return api.replace(/^http/, "ws");
-})();
 
 export function useSessionWs(sessionId: string | null) {
   const applyEvent = useChat((s) => s.applyEvent);
@@ -22,7 +17,7 @@ export function useSessionWs(sessionId: string | null) {
     if (!sessionId) return;
 
     const token = useAuth.getState().token;
-    const url = `${BASE_WS}/ws/chat/${sessionId}${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+    const url = `${wsBase()}/ws/chat/${sessionId}${token ? `?token=${encodeURIComponent(token)}` : ""}`;
     const ws = new WebSocket(url);
     wsRef.current = ws;
 

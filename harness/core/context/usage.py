@@ -51,6 +51,10 @@ class SessionUsage:
     total: Usage = field(default_factory=Usage)
     by_model: dict[str, Usage] = field(default_factory=lambda: defaultdict(Usage))
 
+    def cost_usd(self) -> float:
+        """按模型分别计价后求和，避免 mixed 用量被错误套用单一模型价格。"""
+        return sum(usage.cost_usd() for usage in self.by_model.values())
+
 
 class UsageTracker:
     """进程内 in-memory 计数。asyncio 单线程，无需锁。

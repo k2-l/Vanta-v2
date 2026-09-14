@@ -568,6 +568,22 @@ async def messages_after_checkpoint(session_id: str, fallback_n: int = 16) -> li
         return list(result.scalars().all())
 
 
+async def uncompacted_history_gap(session_id: str, fallback_n: int = 16) -> int:
+    """返回未被摘要覆盖且落在 fallback 窗口之外的消息数。"""
+    sf = session_factory()
+    async with sf() as db:
+        result = await db.execute(
+            select(Session.compacted_upto, func.count(Message.id))
+            .outerjoin(Message, Message.session_id == Session.id)
+            .where(Session.id == session_id)
+            .group_by(Session.compacted_upto)
+        )
+        row = result.one_or_none()
+    if row is None or row[0] is not None:
+        return 0
+    return max(0, int(row[1]) - max(0, fallback_n))
+
+
 async def upsert_phase(phase_id: str, session_id: str, payload: dict) -> None:
     # 存储主键用 per-(session_id, phase_id) 的 md5（固定 32 hex 字符，正好 String(32)）。
     # 原因：phase_id 跨会话复用裸常量（主阶段恒为 "agent"），若直接作单列 PK，首个会话
@@ -789,4 +805,3 @@ async def set_finding_status(finding_id: str, status: str) -> bool:
         )
         await db.commit()
         return result.rowcount > 0
-

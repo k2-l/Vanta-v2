@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from harness.core.graph.providers import build_chat_model, resolve_provider
 from harness.infra.logging import log
 
 # 用户主动压缩：结构化交接摘要的系统指令（结构化 + 「新覆盖旧」淘汰过期信息）
@@ -36,7 +36,7 @@ def _extract_text(content: Any) -> str:
 
 
 async def _compress_context(
-    context: str, target_chars: int, model_name: str, api_key: str | None, base_url: str | None
+    context: str, target_chars: int, model_name: str, provider: str | None = None
 ) -> str:
     prompt = (
         f"请将以下内容总结为不超过 {target_chars} 个字符的精炼摘要，"
@@ -44,13 +44,12 @@ async def _compress_context(
         "直接输出摘要，不加任何前缀说明。\n\n"
         f"{context}"
     )
-    kwargs: dict[str, Any] = {"model": model_name, "max_tokens": max(512, target_chars // 3)}
-    if api_key:
-        kwargs["anthropic_api_key"] = api_key
-    if base_url:
-        kwargs["base_url"] = base_url
     try:
-        model = ChatAnthropic(**kwargs)
+        model = build_chat_model(
+            provider=resolve_provider(provider, model_name),
+            model=model_name,
+            max_tokens=max(512, target_chars // 3),
+        )
         resp = await model.ainvoke([HumanMessage(content=prompt)])
         summary = _extract_text(resp.content).strip()
         log.info(
@@ -67,8 +66,7 @@ async def compact_session_history(
     *,
     prev_summary: str = "",
     model_name: str,
-    api_key: str | None,
-    base_url: str | None,
+    provider: str | None = None,
     max_tokens: int = 1024,
 ) -> str:
     """把一段对话历史原文（transcript）压成结构化交接摘要。
@@ -85,13 +83,11 @@ async def compact_session_history(
     parts.append("【对话历史】\n" + transcript)
     user = "\n\n".join(parts)
 
-    kwargs: dict[str, Any] = {"model": model_name, "max_tokens": max_tokens}
-    if api_key:
-        kwargs["anthropic_api_key"] = api_key
-    if base_url:
-        kwargs["base_url"] = base_url
-
-    model = ChatAnthropic(**kwargs)
+    model = build_chat_model(
+        provider=resolve_provider(provider, model_name),
+        model=model_name,
+        max_tokens=max_tokens,
+    )
     resp = await model.ainvoke(
         [SystemMessage(content=_COMPACTION_SYSTEM), HumanMessage(content=user)]
     )

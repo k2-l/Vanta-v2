@@ -70,11 +70,15 @@ def _persist_and_truncate(raw: str, tool_name: str, max_output_chars: int) -> st
     head = raw[:max_output_chars]
     try:
         ws = Path(get_settings().workspace_dir or ".").resolve()
-        (ws / ".tool_outputs").mkdir(parents=True, exist_ok=True)
+        output_dir = ws / ".tool_outputs"
+        output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        output_dir.chmod(0o700)
         digest = hashlib.md5(raw.encode("utf-8", "replace")).hexdigest()[:12]
         safe = re.sub(r"[^a-zA-Z0-9_-]+", "-", tool_name)[:40] or "tool"
         rel = f".tool_outputs/{safe}-{digest}.txt"
-        (ws / rel).write_text(raw, encoding="utf-8")
+        output_path = ws / rel
+        output_path.write_text(raw, encoding="utf-8")
+        output_path.chmod(0o600)
         return (
             head
             + f"\n\n…[输出过长（共 {len(raw)} 字符），已截断至 {max_output_chars}。"
@@ -181,9 +185,8 @@ async def execute_tool_core(
         async with sem:
             result = await asyncio.wait_for(tool.run(**tool_input), timeout=timeout)
         if result.ok:
-            raw = result.output
-            if xenv.has_engagement:
-                raw, _ = redact(raw)  # engagement 期间给凭据打码（喂 LLM / 落盘前）
+            # 无论是否处于 engagement，先统一脱敏，再喂给模型或写入大输出文件。
+            raw, _ = redact(result.output)
             if len(raw) > max_output_chars:
                 raw = _persist_and_truncate(raw, tool_name, max_output_chars)
             flags = injection_flags(raw, tool_name)

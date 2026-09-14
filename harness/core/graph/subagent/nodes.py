@@ -18,7 +18,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_core.runnables import RunnableConfig
 
 from harness.contracts.models import AgentFull
-from harness.core.context.budget import record_usage
+from harness.core.context.budget import BudgetExceeded, check_budget, record_usage
 from harness.core.context.summarize import _extract_text
 from harness.core.foundation.errors import (
     _BACKOFF_SECONDS,
@@ -30,6 +30,7 @@ from harness.core.foundation.errors import (
 from harness.core.foundation.state import SubAgentState
 from harness.core.foundation.tokens import count_tokens
 from harness.core.graph.models import _get_base_model
+from harness.core.graph.providers import extract_usage, resolve_provider
 from harness.core.graph.tool_exec import (
     collect_tool_results,
     disclosed_from_tool_calls,
@@ -42,14 +43,11 @@ from harness.infra.settings import get_settings
 from harness.tools.exec_context import apply_exec_env
 from harness.tools.registry import registry
 
-from .context import _agent_depth
+from .context import _agent_depth, bind_tool_call_id
 
-# 只有主代理才能使用的工具，子 agent 无论白名单如何配置均不可用
-_MAIN_AGENT_ONLY_TOOLS: frozenset[str] = frozenset(
-    {
-        "Agent",
-    }
-)
+# 编排工具不受普通工具白名单影响；所有 Agent 都能继续委派，但仍受深度/次数护栏。
+_ALWAYS_AVAILABLE_ORCHESTRATION_TOOLS: frozenset[str] = frozenset({"Agent"})
+_MAIN_AGENT_ONLY_TOOLS: frozenset[str] = frozenset()
 
 
 # ─── 子 agent 节点：agent ─────────────────────────────────────────────
@@ -65,38 +63,40 @@ _SUB_TOOL_SEARCH_HINT = (
 def _build_agent_node(agent: AgentFull, depth: int):
     """返回绑定了特定 agent 配置的 agent_node。
 
-    depth：当前子 agent 所处深度（1 或 2）。
+    depth：当前子 agent 所处深度（1..sub_agent_max_depth）。
     工具绑定分两种：
       - 白名单**非空** → 显式选择优先，构建时一次性绑定指定工具（不参与 tool_search）。
       - 白名单**为空** → 绑定 static 集 + 已披露 dynamic + tool_search，并在闭包内按
         state["disclosed_tools"] 逐轮 rebind（带 per-closure 小缓存），使披露即时生效。
-    两种情况都始终排除主代理专属工具（_MAIN_AGENT_ONLY_TOOLS）。
+    两种情况都始终包含 Agent 编排工具。
     """
     s = get_settings()
     model_name = agent.model or s.model_mid
+    # 子代理 provider：frontmatter 显式 provider 优先（手工选择），否则按模型名智能推断。
+    # 支持跨 provider（如主代理 Anthropic、本子代理 OpenAI）。
+    provider = resolve_provider(agent.provider, model_name)
 
     base_model = _get_base_model(
         model_name,
-        s.anthropic_api_key,
-        s.anthropic_base_url,
         s.max_tokens_per_turn,
+        None,
+        provider,
     )
 
     allowed_names = set(agent.tools) if agent.tools else None
     # 白名单模式：显式选择，构建时定死一份绑定（含用户点名的 dynamic 工具，get 按名取不受 disclosure 影响）。
     if allowed_names:
+        effective_names = allowed_names | _ALWAYS_AVAILABLE_ORCHESTRATION_TOOLS
         static_tools = [
             t.to_langchain()
-            for t in registry.list(list(allowed_names))
+            for t in registry.list(list(effective_names))
             if t.name not in _MAIN_AGENT_ONLY_TOOLS
         ]
         fixed_bound = base_model.bind_tools(static_tools) if static_tools else base_model
     else:
         # 全量模式：static 常驻集 + tool_search（常驻），dynamic 部分按披露逐轮追加。
         fixed_bound = None
-        static_tools = [
-            t for t in registry.lc_tools_static() if t["name"] not in _MAIN_AGENT_ONLY_TOOLS
-        ]
+        static_tools = list(registry.lc_tools_static())
 
     # 全量模式下按 disclosed 元组缓存绑定，避免每轮 bind_tools 重建。
     _bound_by_disclosed: dict[tuple[str, ...], Any] = {}
@@ -119,21 +119,37 @@ def _build_agent_node(agent: AgentFull, depth: int):
 
     async def agent_node(state: SubAgentState, config: RunnableConfig) -> dict:
         content = agent.content or f"你是{agent.meta.name}，专业 AI 助手。"
+        content += (
+            "\n\n# Agent 委派\n"
+            f"你可以使用 Agent 工具继续委派；当前深度 {depth}，最大深度 {s.sub_agent_max_depth}。"
+            f"本 invocation 最多直接委派 {s.max_agent_delegations_per_agent} 个子 Agent。"
+        )
         # 全量模式且存在可披露 dynamic 工具时，追加 tool_search 使用说明。
         if fixed_bound is None and registry.dynamic_specs():
             content = content + _SUB_TOOL_SEARCH_HINT
         system_msg = SystemMessage(content=content)
         messages = [system_msg] + list(state.get("messages", []))
-        bound = _bind_for(state.get("disclosed_tools") or [])
+        invocation_tokens = state.get("invocation_tokens", 0)
+        token_limit = state.get("token_limit", s.sub_agent_token_limit)
+        force_finalize = state.get("force_finalize", False) or invocation_tokens >= token_limit
+        if force_finalize and not state.get("force_finalize", False):
+            messages.append(
+                HumanMessage(
+                    content="[⚙系统] 当前 Agent 的独立 token 预算已用尽。请停止调用工具，立即总结已有结果。"
+                )
+            )
+        bound = base_model if force_finalize else _bind_for(state.get("disclosed_tools") or [])
         try:
+            await check_budget(state.get("session_id", "_anon"))
             response = await bound.ainvoke(messages, config=config)
-            usage = getattr(response, "response_metadata", {}).get("usage", {})
-            in_t = usage.get("input_tokens", count_tokens(agent.content or ""))
-            out_t = usage.get(
-                "output_tokens",
-                count_tokens(
+            raw_in, raw_out, _cr, _cc = extract_usage(response)
+            in_t = raw_in if raw_in is not None else count_tokens(agent.content or "")
+            out_t = (
+                raw_out
+                if raw_out is not None
+                else count_tokens(
                     response.content if isinstance(response.content, str) else str(response.content)
-                ),
+                )
             )
             await record_usage(state.get("session_id", "_anon"), model_name, in_t, out_t)
             log.info(
@@ -145,7 +161,18 @@ def _build_agent_node(agent: AgentFull, depth: int):
                 depth=depth,
             )
             _inc("sub_agent.llm_calls")
-            return {"messages": [response], "error": None, "error_type": None}
+            return {
+                "messages": [response],
+                "error": None,
+                "error_type": None,
+                "invocation_tokens": invocation_tokens + in_t + out_t,
+                "force_finalize": force_finalize,
+            }
+        except BudgetExceeded as exc:
+            return {
+                "error": str(exc),
+                "error_type": f"BUDGET_{exc.kind}",
+            }
         except Exception as exc:  # noqa: BLE001
             err = str(exc)
             log.warning("sub_agent.llm_error", agent=agent.meta.name, exc=err[:200])
@@ -203,16 +230,17 @@ async def _execute_subgraph_tool_call(
         )
 
     # 委托共享内核
-    content, error_code, error_str, _flags, core_logs = await execute_tool_core(
-        tool_name,
-        tool_input,
-        sem=sem,
-        timeout=s.tool_timeout_seconds,
-        max_output_chars=s.max_tool_output_chars,
-        log_event="sub_agent.tool.exec",
-        metric_prefix="sub_agent.tool",
-        session_id=session_id,
-    )
+    with bind_tool_call_id(call_id):
+        content, error_code, error_str, _flags, core_logs = await execute_tool_core(
+            tool_name,
+            tool_input,
+            sem=sem,
+            timeout=s.tool_timeout_seconds,
+            max_output_chars=s.max_tool_output_chars,
+            log_event="sub_agent.tool.exec",
+            metric_prefix="sub_agent.tool",
+            session_id=session_id,
+        )
     local_logs.extend(core_logs)
     return (
         ToolMessage(
@@ -298,9 +326,28 @@ async def _recovery_node(state: SubAgentState, config: RunnableConfig) -> dict:
     error_type = state.get("error_type") or classify_error(error)
 
     _mi = state.get("max_tool_iterations", 10)
-    if not error and _mi > 0 and state.get("tool_iterations", 0) >= _mi:
-        error_type = "TOOL_LOOP"
-        error = f"工具调用循环：已超过最大迭代次数 {_mi}"
+    token_exhausted = state.get("invocation_tokens", 0) >= state.get("token_limit", 1)
+    if not error and (
+        token_exhausted or (_mi > 0 and state.get("tool_iterations", 0) >= _mi)
+    ):
+        reason = "独立 token 预算已用尽" if token_exhausted else f"已达到工具迭代上限 {_mi}"
+        pending: list[ToolMessage] = []
+        messages = state.get("messages", [])
+        last = messages[-1] if messages else None
+        if isinstance(last, AIMessage) and last.tool_calls:
+            pending = skipped_tool_messages(last.tool_calls)
+        return {
+            "messages": [
+                *pending,
+                HumanMessage(content=f"[⚙系统] {reason}。请停止调用工具，立即总结已有结果。"),
+            ],
+            "error": None,
+            "error_type": None,
+            "force_finalize": True,
+        }
+
+    if error_type.startswith("BUDGET_"):
+        return {"error": error, "error_type": f"TERMINAL_{error_type}"}
 
     if error_type in _NON_RETRYABLE_ERRORS:
         log.warning("sub_agent.recovery.terminal", error_type=error_type)
@@ -340,6 +387,21 @@ _CRITIC_PROMPT_TEMPLATE = """评估以下输出质量：
 - verdict: PASS (各项≥3) 或 FAIL"""
 
 
+def _parse_critic_json(text: str) -> dict[str, Any]:
+    """从纯 JSON、Markdown 围栏或说明文字中提取首个合法 JSON 对象。"""
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            value, _end = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    raise ValueError("critic 响应中没有合法 JSON 对象")
+
+
 async def critic_node(state: SubAgentState, config: RunnableConfig) -> dict:
     """评估子 agent 最终回复质量，FAIL 时反馈重试（上限 2 次），否则放行。
 
@@ -360,32 +422,56 @@ async def critic_node(state: SubAgentState, config: RunnableConfig) -> dict:
     task_text = _extract_text(messages[0].content) if messages else ""
 
     s = get_settings()
+    invocation_tokens = state.get("invocation_tokens", 0)
+    if invocation_tokens >= state.get("token_limit", s.sub_agent_token_limit):
+        log.info("sub_agent.critic.skipped_budget", agent=state.get("agent_name", ""))
+        return {"critic_passed": True}
+    critic_provider = resolve_provider(s.model_low_provider, s.model_low)
     model = _get_base_model(
-        s.model_low, s.anthropic_api_key, s.anthropic_base_url, s.summarize_max_tokens
+        s.model_low, s.summarize_max_tokens, None, critic_provider
     )
     prompt = _CRITIC_PROMPT_TEMPLATE.format(task=task_text[:2000], output=output[:2000])
 
     resp_text = ""
+    critic_in = 0
+    critic_out = 0
     try:
+        await check_budget(state.get("session_id", "_anon"))
         resp = await model.ainvoke([HumanMessage(content=prompt)])
         resp_text = _extract_text(resp.content)
 
-        usage = getattr(resp, "response_metadata", {}).get("usage", {})
+        raw_in, raw_out, _cr, _cc = extract_usage(resp)
+        critic_in = raw_in if raw_in is not None else count_tokens(prompt)
+        critic_out = raw_out if raw_out is not None else count_tokens(resp_text)
         await record_usage(
             state.get("session_id", "_anon"),
             s.model_low,
-            usage.get("input_tokens", count_tokens(prompt)),
-            usage.get("output_tokens", count_tokens(resp_text)),
+            critic_in,
+            critic_out,
         )
 
-        result = json.loads(resp_text)
-        verdict = result["verdict"]
-        completeness = result["completeness"]
-        accuracy = result["accuracy"]
-        actionability = result["actionability"]
+        result = _parse_critic_json(resp_text)
+        verdict = str(result["verdict"]).upper()
+        if verdict not in {"PASS", "FAIL"}:
+            raise ValueError(f"critic verdict 非法：{verdict}")
+        completeness = float(result["completeness"])
+        accuracy = float(result["accuracy"])
+        actionability = float(result["actionability"])
+        scores = (completeness, accuracy, actionability)
+        if any(score < 1 or score > 5 for score in scores):
+            raise ValueError(f"critic 分数超出 1-5：{scores}")
+        # 模型的 verdict 与分数冲突时取更严格结果，落实“各项≥3 才 PASS”。
+        if any(score < 3 for score in scores):
+            verdict = "FAIL"
+    except BudgetExceeded as exc:
+        log.warning("sub_agent.critic.skipped_global_budget", kind=exc.kind)
+        return {"critic_passed": True}
     except Exception as exc:  # noqa: BLE001
         log.warning("sub_agent.critic.parse_error", exc=str(exc), raw=resp_text[:200])
-        return {"critic_passed": True}
+        return {
+            "critic_passed": True,
+            "invocation_tokens": invocation_tokens + critic_in + critic_out,
+        }
 
     attempts = state.get("critic_attempts", 0)
     log.info(
@@ -408,8 +494,12 @@ async def critic_node(state: SubAgentState, config: RunnableConfig) -> dict:
         return {
             "messages": [feedback],
             "critic_attempts": next_attempts,
+            "invocation_tokens": invocation_tokens + critic_in + critic_out,
             "error": None,
             "error_type": None,
         }
 
-    return {"critic_passed": True}
+    return {
+        "critic_passed": True,
+        "invocation_tokens": invocation_tokens + critic_in + critic_out,
+    }

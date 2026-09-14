@@ -28,6 +28,7 @@ dependencies = [
     "httpx-ws>=0.9.0",
     "scikit-learn>=1.8.0",
     # 语义检索：embedding + ReRank 均走 Gitee AI 云端 API（httpx 调用），无本地推理依赖
+    "langchain-openai>=1.6.2",
 ]
 
 [dependency-groups]
