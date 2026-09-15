@@ -20,14 +20,14 @@
 |---|---|---|
 | G0 / G1 地基与聊天 | Tauri 2、六模块入口、连接/登录/钥匙串、受控 IPC、SSE→Channel、会话与流式回答；物理机已验证连接和基本回答 | 回答详情新包复验；登录、长会话、停止和断线端到端验证 |
 | G1.5 Shell | 设计 token、导航/侧栏/详情、主题、快捷键、响应式与通用状态组件 | 1280×720、1100×680、960×640 截图；键盘/主题/减少动态效果走查与滚动位置恢复 |
-| G2 对话与运行 | 文本/阶段/工具/用量投影；Runs 以 sessions+phases 构建树和时间线，支持筛选、快照订阅、重连及 Chat↔Runs 跳转 | 停止/断线/重连真机验证；历史工具/Token/耗时、产物关联；服务端事件重放与运行取消未提供 |
+| G2 对话与运行 | 文本/阶段/工具/用量投影；Runs 单请求聚合列表，以 phases + 脱敏结构化事件历史构建树、工具、Token、耗时和时间线，支持筛选、快照订阅、重连及 Chat↔Runs 跳转 | 停止/断线/重连真机验证；产物关联；正文 delta 重放与运行取消未提供；升级前旧运行无遥测历史 |
 | G3 审批与产物 | 真实待审批队列、批准/拒绝、过期分类；后端审批请求携带 risk/target/scope/impact（工具声明或按 category 派生并标注来源），决策以独立 decision_id 标识并写入哈希链审计账本，新增 `GET /chat/approvals/history` 服务端历史，前端合并服务端历史（权威）与本次页面会话内存记录；多卡按 call_id 独立提交，审计写入失败有明确提示；只读产物列表、Markdown 预览、secret 仅元数据 | 后端问题解决后再做审批契约真机联调；过期项持久历史；产物来源关联、多类型预览、安全导出 |
 | G4 能力与设置 | 五类真实能力目录及单来源降级；七类设置入口、连接切换清理、更新未配置提示、Rust 诊断导出 | 能力可用性/位置/同步时间、连接隔离与诊断脱敏验收；通知、签名更新、版本兼容提示 |
 | G5 质量与发布 | 局部投影、流解析、脱敏和 IPC 单元测试代码 | 组件/E2E、Python 回归、可访问性、性能、平台安装/更新/回滚及发布签字 |
 
 以下是**不能按“已完成”宣传的能力边界**：
 
-- `run ≈ session`；`run_subscribe` 约每 1.5 秒轮询 phases，sequence 是客户端快照序号，不是后端可重放事件。后端当前声明 `run_snapshot=true`，`event_replay=false`，`run_cancel=false`，`artifact_export=false`；停止按钮只停止当前对话流。
+- `run ≈ session`；`run_subscribe` 约每 1.5 秒轮询 phases，snapshot sequence 是客户端序号。后端另以全局单调 seq 持久化脱敏后的结构化运行事件，声明 `run_snapshot=true`、`run_history=true`；正文 delta 不入事件历史，故仍如实声明 `event_replay=false`。`run_cancel=false`、`artifact_export=false`；停止按钮只停止当前对话流。
 - 审批历史以服务端哈希链审计账本为权威（`GET /chat/approvals/history`，进程重启后仍可查询）；本次页面会话的乐观记录只在内存保留完整请求，旧版 `vanta.approvals.decisions.*` 存储在启动时清理。按 call_id 与服务端历史合并、服务端优先；多卡提交按 call_id 独立跟踪。决策以独立 decision_id 标识，entry_hash 作为审计证据（写入失败时 `audit_recorded=false` 且 entry_hash 为空，决策仍生效，界面明确提示；页面关闭后该未入账记录不再可见）。风险/对象/范围/影响由后端在审批请求中携带（工具 `risk_level` 声明或按 category 派生并标注 `risk_source`）。仍待验收：后端问题解决后的真机联调；过期项随后端队列清理消失后无历史；审计写入失败的持久可追溯性需要后端补偿机制。
 - Artifacts 是 `/v1/artifacts` 的只读看板资源，大小由正文估算、时间来自 `created_at`；来源尚未关联到 session/run，导出入口因 capability=false 禁用。
 - 能力目录来自 `/v1/agents`、`/v1/skills`、`/v1/mcp/servers`、`/v1/knowledge`、`/v1/containers`。Agent/Skill/Knowledge 的“可用”尚未验证依赖就绪；容器状态可能退回数据库记录，MCP 位置目前固定“本机”，“同步时间”只是客户端查询时间。后端未配置 Qdrant 时自动记忆与记忆召回不可用，但基本对话不依赖它们；工作区目录统一修复尚待实际进程复验。
@@ -35,7 +35,7 @@
 
 证据入口：[Shell](../desktop/src/app/shell/)、[运行投影](../desktop/src/features/runs/projection.ts)、[Rust 流桥接](../desktop/src-tauri/src/commands/stream.rs)、[审批记录](../desktop/src/features/approvals/decisions.ts)、[审批门/风险派生](../harness/security/approvals.py)、[审批决策/历史路由](../harness/routes/chat.py)、[产物页](../desktop/src/pages/artifacts/index.tsx)、[能力目录](../desktop/src/features/capabilities/useCapabilities.ts)、[系统命令](../desktop/src-tauri/src/commands/system.rs)。
 
-验证记录：前端 `npm run build` 与 `npm test` 通过（4 个用例，主包约 573 kB）；Tauri 配置 JSON 解析通过。后端本轮 40 个 Python 回归测试、`ruff` F/I 检查、语法编译及 `git diff --check` 通过，覆盖无 Qdrant 的回答落库、向量故障降级、工作区 Shell 执行与越界拒绝。`npm run lint` 因工作区未安装 `eslint` 无法执行。上次 `cargo test --locked --offline` 通过（Rust 3 个用例），但不覆盖当前工作区改动。审批多卡真实交互、IPC、窗口截图及后端重启后的真实 SSE 请求未运行；真机联调暂不可用。运行 Cargo 前须 `source ~/.cargo/env`；按用户要求，Windows 重新编译由用户执行。
+验证记录：前端 `npm run build` 与 `npm test` 通过（5 个用例，主包约 576 kB）；Rust `cargo test --locked --offline` 通过（8 个用例）。后端 42 个 unittest 与本轮 `ruff` 检查通过，新增覆盖运行历史凭据脱敏、phase 按序归档，并覆盖无 Qdrant 的回答落库、向量故障降级、工作区 Shell 执行与越界拒绝；Python 语法编译及 `git diff --check` 通过。`npm run lint` 因工作区未安装 `eslint` 无法执行。审批多卡真实交互、IPC、窗口截图、数据库新表迁移及后端重启后的真实 SSE 请求未运行；真机联调暂不可用。运行 Cargo 前须 `source ~/.cargo/env`；按用户要求，Windows 重新编译由用户执行。
 
 ## 3. 下一步
 

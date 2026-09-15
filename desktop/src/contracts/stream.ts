@@ -88,6 +88,28 @@ export type RunSummaryWire = {
   updated_at: string;
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
   steps: number;
+  started_at?: string | null;
+  finished_at?: string | null;
+  duration_ms?: number | null;
+};
+
+export type PersistedRunEventName =
+  | "tool_call"
+  | "tool_result"
+  | "tool_error"
+  | "worker_start"
+  | "worker_end"
+  | "usage"
+  | "phase"
+  | "task_log"
+  | "done";
+
+/** GET /sessions/{id}/events 返回的结构化运行历史（正文仍来自 messages）。 */
+export type RunEventWire = {
+  seq: number;
+  event: PersistedRunEventName;
+  data: Record<string, unknown>;
+  created_at: string;
 };
 
 export type StreamClosedReason = "completed" | "cancelled" | "failed" | "receiver_closed";

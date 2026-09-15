@@ -9,6 +9,7 @@ from harness.app.schemas import (
     CompressCommitRequest,
     CompressPreviewOut,
     MessageOut,
+    RunEventOut,
     RunSummaryOut,
     SessionCreate,
     SessionOut,
@@ -169,4 +170,19 @@ async def list_phases(session_id: str):
             "updated_at": p.updated_at,
         }
         for p in phases
+    ]
+
+
+@router.get("/sessions/{session_id}/events", response_model=list[RunEventOut])
+async def list_run_events(session_id: str, after_seq: int = 0, limit: int = 1000):
+    if await db.get_session(session_id) is None:
+        raise HTTPException(404, f"会话不存在：{session_id}")
+    rows = await db.list_run_events(
+        session_id,
+        after_seq=max(0, after_seq),
+        limit=max(1, min(limit, 2000)),
+    )
+    return [
+        RunEventOut(seq=row.id, event=row.event, data=row.data, created_at=row.created_at)
+        for row in rows
     ]

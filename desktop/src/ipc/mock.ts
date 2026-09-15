@@ -8,7 +8,7 @@
 
 import type { ConnectionProfile, ServerCapabilities } from "@/contracts/connection";
 import type { ChatMessage, SessionSummary } from "@/contracts/chat";
-import type { PhaseSnapshotRow, RunSummaryWire, StreamPacket } from "@/contracts/stream";
+import type { PhaseSnapshotRow, RunEventWire, RunSummaryWire, StreamPacket } from "@/contracts/stream";
 import type { ApprovalDecisionRecord, ApprovalWire, ArtifactWire } from "@/contracts/resources";
 import type { IpcContract } from "@/contracts/ipc";
 import type { StartChatArgs } from "./chat";
@@ -18,6 +18,7 @@ import type { RunSubscribeArgs } from "./run";
 const MOCK_CAPS: ServerCapabilities = {
   apiVersion: "1",
   runSnapshot: true,
+  runHistory: true,
   eventReplay: false,
   runCancel: false,
   artifactExport: false,
@@ -55,6 +56,7 @@ const store: {
   sessions: SessionSummary[];
   messages: Record<string, ChatMessage[]>;
   phases: Record<string, PhaseSnapshotRow[]>;
+  events: Record<string, RunEventWire[]>;
   approvals: ApprovalWire[];
   decisions: ApprovalDecisionRecord[];
   artifacts: ArtifactWire[];
@@ -89,6 +91,9 @@ const store: {
   },
   phases: {
     "session-mock": buildPhaseTree("session-mock", "审计 target-api 的认证与越权面", "ok"),
+  },
+  events: {
+    "session-mock": buildRunHistory(),
   },
   approvals: [
     {
@@ -184,6 +189,7 @@ const store: {
 const streams = new Map<string, ReturnType<typeof setTimeout>[]>();
 
 let seq = 1;
+let runEventSeq = 100;
 const uid = (p: string) => `${p}_${(seq++).toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
 async function delay<T>(v: T, ms = 120): Promise<T> {
@@ -231,8 +237,45 @@ function mockRunSummaries(limit = 60): RunSummaryWire[] {
           : phases.some((phase) => phase.status === "failed")
             ? "failed"
             : "completed";
-    return { ...session, status, steps: phases.length };
+    const startedAt = phases[0]?.created_at ?? null;
+    const finishedAt = status === "running" || status === "queued" ? null : (phases.at(-1)?.updated_at ?? null);
+    const durationMs = startedAt
+      ? Math.max(0, new Date(finishedAt ?? Date.now()).getTime() - new Date(startedAt).getTime())
+      : null;
+    return {
+      ...session,
+      status,
+      steps: phases.length,
+      started_at: startedAt,
+      finished_at: finishedAt,
+      duration_ms: durationMs,
+    };
   });
+}
+
+function buildRunHistory(): RunEventWire[] {
+  const createdAt = new Date(Date.now() - 5 * 60_000).toISOString();
+  return [
+    {
+      seq: 1,
+      event: "tool_call",
+      data: { type: "tool_call", role: "worker", tool: "ripgrep", inputs: { pattern: "execute\\(" }, task_id: "agent" },
+      created_at: createdAt,
+    },
+    {
+      seq: 2,
+      event: "tool_result",
+      data: { type: "tool_result", role: "worker", tool: "ripgrep", ok: true, output: "命中 37 处可疑点", task_id: "agent" },
+      created_at: createdAt,
+    },
+    {
+      seq: 3,
+      event: "usage",
+      data: { type: "usage", model: "claude-mock", turn_input: 4200, turn_output: 620, turn_cost_usd: 0.021, session_input: 82400, session_output: 12900, session_cost_usd: 0.38 },
+      created_at: createdAt,
+    },
+    { seq: 4, event: "done", data: { type: "done" }, created_at: createdAt },
+  ];
 }
 
 export async function mockInvoke<C extends keyof IpcContract>(
@@ -311,7 +354,7 @@ export async function mockInvoke<C extends keyof IpcContract>(
 
     case "api_request": {
       const operation = a?.operation as
-        | { op?: string; sessionId?: string; limit?: number; kind?: string; callId?: string; approved?: boolean }
+        | { op?: string; sessionId?: string; afterSeq?: number; limit?: number; kind?: string; callId?: string; approved?: boolean }
         | undefined;
       if (operation?.op === "sessions.list") return delay(store.sessions.slice()) as never;
       if (operation?.op === "runs.list") return delay(mockRunSummaries(operation.limit)) as never;
@@ -320,6 +363,13 @@ export async function mockInvoke<C extends keyof IpcContract>(
       }
       if (operation?.op === "sessions.phases") {
         return delay(store.phases[operation.sessionId ?? ""]?.slice() ?? []) as never;
+      }
+      if (operation?.op === "sessions.events") {
+        return delay(
+          (store.events[operation.sessionId ?? ""] ?? [])
+            .filter((event) => event.seq > (operation.afterSeq ?? 0))
+            .slice(0, operation.limit ?? 1000),
+        ) as never;
       }
       if (operation?.op === "approvals.list") return delay(store.approvals.slice()) as never;
       if (operation?.op === "approvals.history") {
@@ -399,6 +449,7 @@ export async function mockStartChat(
     const now = new Date().toISOString();
     store.sessions.unshift({ id: sessionId, title: args.content.slice(0, 28), created_at: now, updated_at: now });
     store.messages[sessionId] = [];
+    store.events[sessionId] = [];
   }
   store.messages[sessionId].push({
     id: uid("message"),
@@ -413,6 +464,25 @@ export async function mockStartChat(
   let step = 0;
   const emit = (packet: StreamPacket, gap = 60) => {
     step += 1;
+    if (
+      packet.event === "tool_call" ||
+      packet.event === "tool_result" ||
+      packet.event === "tool_error" ||
+      packet.event === "worker_start" ||
+      packet.event === "worker_end" ||
+      packet.event === "usage" ||
+      packet.event === "phase" ||
+      packet.event === "task_log" ||
+      packet.event === "done"
+    ) {
+      const history = store.events[sessionId] ?? (store.events[sessionId] = []);
+      history.push({
+        seq: runEventSeq++,
+        event: packet.event,
+        data: packet.data as Record<string, unknown>,
+        created_at: new Date().toISOString(),
+      });
+    }
     timers.push(setTimeout(() => onEvent(packet), step * gap));
   };
 

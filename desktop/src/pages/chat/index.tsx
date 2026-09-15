@@ -38,6 +38,7 @@ export function ChatPage() {
   const connectionId = useConnection((state) => state.activeConnectionId);
   const authenticated = useConnection((state) => state.auth.authenticated);
   const eventReplay = useConnection((state) => state.capabilities.eventReplay);
+  const runHistory = useConnection((state) => state.capabilities.runHistory);
   const selectStore = useUi((s) => s.select);
   const navigate = useNavigate();
   const location = useLocation();
@@ -255,7 +256,7 @@ export function ChatPage() {
     <DetailPanel title="运行详情" onClose={() => useUi.getState().setDetailOpen("chat", false)}>
       {detailProjection && detailProjection.phaseOrder.length > 0 ? (
         <>
-          <RunDetailBody projection={detailProjection} eventReplay={eventReplay} />
+          <RunDetailBody projection={detailProjection} eventReplay={eventReplay} runHistory={runHistory} />
           <Button size="sm" variant="secondary" className="mt-1 w-full" onClick={openInRuns}>
             <Activity size={14} />
             在运行页打开

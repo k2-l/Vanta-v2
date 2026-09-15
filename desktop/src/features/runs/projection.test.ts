@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { StreamPacket } from "@/contracts/stream";
+import type { RunEventWire, StreamPacket } from "@/contracts/stream";
 import { applyPacket, applyPhasesSnapshot, deriveTimeline, emptyProjection } from "./projection";
+import { projectionFromHistory } from "./useRuns";
 
 describe("run projection", () => {
   it("folds public text, tools, usage and completion into one view model", () => {
@@ -60,5 +61,44 @@ describe("run projection", () => {
 
     expect(duplicate).toBe(current);
     expect(duplicate.phases.root.label).toBe("原状态");
+  });
+
+  it("restores historical tools and token usage alongside the phase snapshot", () => {
+    const events: RunEventWire[] = [
+      {
+        seq: 1,
+        event: "tool_call",
+        data: { type: "tool_call", role: "worker", tool: "shell", inputs: { cmd: "pwd" }, task_id: "agent" },
+        created_at: "2026-09-15T00:00:00Z",
+      },
+      {
+        seq: 2,
+        event: "tool_result",
+        data: { type: "tool_result", role: "worker", tool: "shell", ok: true, output: "/workspace", task_id: "agent" },
+        created_at: "2026-09-15T00:00:01Z",
+      },
+      {
+        seq: 3,
+        event: "usage",
+        data: { type: "usage", model: "test-model", turn_input: 80, turn_output: 20, turn_cost_usd: 0, session_input: 800, session_output: 200, session_cost_usd: 0 },
+        created_at: "2026-09-15T00:00:02Z",
+      },
+    ];
+    const result = projectionFromHistory(
+      "session-history",
+      [{
+        id: "agent",
+        label: "已完成",
+        status: "ok",
+        created_at: "2026-09-15T00:00:00Z",
+        updated_at: "2026-09-15T00:00:03Z",
+      }],
+      events,
+    );
+
+    expect(result.status).toBe("completed");
+    expect(result.tools[0]).toMatchObject({ tool: "shell", status: "ok", output: "/workspace" });
+    expect(result.usage?.sessionInput).toBe(800);
+    expect(result.durationMs).toBe(3000);
   });
 });

@@ -6,7 +6,7 @@
 import { DetailSection, DetailField } from "@/components/desktop/DetailPanel";
 import { RunTimeline } from "@/components/desktop/RunTimeline";
 import { StatusBadge, StatusDot } from "@/components/desktop/status";
-import { formatTokens } from "@/lib/format";
+import { formatDuration, formatTokens } from "@/lib/format";
 import {
   PHASE_TONE,
   RUN_STATUS_META,
@@ -83,10 +83,13 @@ export function UsageMeter({ usage }: { usage: RunUsage }) {
 export function RunDetailBody({
   projection,
   eventReplay,
+  runHistory,
 }: {
   projection: RunProjection;
   /** 后端是否支持事件按序重放（否则显示降级提示）。 */
   eventReplay: boolean;
+  /** 后端是否持久化结构化运行遥测。 */
+  runHistory: boolean;
 }) {
   const meta = RUN_STATUS_META[projection.status];
   const timeline = deriveTimeline(projection);
@@ -106,6 +109,9 @@ export function RunDetailBody({
         <DetailField label="阶段 / 工具">
           {phaseCount(projection)} / {toolCount(projection)}
         </DetailField>
+        {projection.durationMs != null && (
+          <DetailField label="耗时">{formatDuration(projection.durationMs)}</DetailField>
+        )}
       </DetailSection>
 
       <DetailSection title="Agent 树">
@@ -115,8 +121,10 @@ export function RunDetailBody({
       <DetailSection title="用量（独立 token）">
         {projection.usage ? (
           <UsageMeter usage={projection.usage} />
+        ) : !runHistory ? (
+          <p className="text-[12px]" style={{ color: "var(--fg-subtle)" }}>当前服务器未提供运行遥测历史。</p>
         ) : (
-          <p className="text-[12px]" style={{ color: "var(--fg-subtle)" }}>历史运行不保留用量；实时运行时在此显示。</p>
+          <p className="text-[12px]" style={{ color: "var(--fg-subtle)" }}>暂无持久用量；升级前创建的旧运行可能未记录。</p>
         )}
       </DetailSection>
 

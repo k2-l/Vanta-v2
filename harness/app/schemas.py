@@ -19,6 +19,8 @@ class ServerCapabilities(BaseModel):
     api_version: str = "1"
     # GET /sessions/{id}/phases 提供 run（会话执行）的阶段快照。
     run_snapshot: bool = True
+    # GET /sessions/{id}/events 提供脱敏后的结构化运行遥测历史。
+    run_history: bool = True
     # 后端事件无 sequence，不支持按序重放；断线后由客户端重拉快照对账。
     event_replay: bool = False
     # 无服务端取消端点；对话流由客户端 stream_stop 中断。
@@ -50,6 +52,18 @@ class RunSummaryOut(BaseModel):
     updated_at: datetime
     status: str
     steps: int
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    duration_ms: int | None = None
+
+
+class RunEventOut(BaseModel):
+    """可持久化的运行遥测事件；seq 是单调递增游标。"""
+
+    seq: int
+    event: str
+    data: dict
+    created_at: datetime
 
 
 class SessionCreate(BaseModel):

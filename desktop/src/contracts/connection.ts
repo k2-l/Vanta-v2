@@ -53,6 +53,7 @@ export type HealthResult = {
 export type ServerCapabilities = {
   apiVersion?: string;
   runSnapshot: boolean;
+  runHistory: boolean;
   eventReplay: boolean;
   runCancel: boolean;
   artifactExport: boolean;
@@ -75,6 +76,7 @@ export type AuthSummary = {
 
 export const DEFAULT_CAPABILITIES: ServerCapabilities = {
   runSnapshot: false,
+  runHistory: false,
   eventReplay: false,
   runCancel: false,
   artifactExport: false,

@@ -23,7 +23,6 @@ from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
-    Float,
     ForeignKey,
     Integer,
     String,
@@ -171,6 +170,20 @@ class SessionPhase(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )
+
+
+class SessionRunEvent(Base):
+    """运行遥测历史；不保存正文 delta，只保留工具、日志、Worker 与用量事件。"""
+
+    __tablename__ = "session_run_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"), index=True
+    )
+    event: Mapped[str] = mapped_column(String(32))
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
 
@@ -375,6 +388,8 @@ async def list_run_summaries(limit: int = 60) -> list[dict]:
         case((SessionPhase.status.in_(("pending", "running")), 1), else_=0)
     )
     failed = func.sum(case((SessionPhase.status == "failed", 1), else_=0))
+    started_at = func.min(SessionPhase.created_at)
+    phase_updated_at = func.max(SessionPhase.updated_at)
     sf = session_factory()
     async with sf() as db:
         result = await db.execute(
@@ -386,6 +401,8 @@ async def list_run_summaries(limit: int = 60) -> list[dict]:
                 steps.label("steps"),
                 active.label("active"),
                 failed.label("failed"),
+                started_at.label("started_at"),
+                phase_updated_at.label("phase_updated_at"),
             )
             .outerjoin(SessionPhase, SessionPhase.session_id == Session.id)
             .group_by(
@@ -410,6 +427,13 @@ async def list_run_summaries(limit: int = 60) -> list[dict]:
             if int(row.failed or 0) > 0
             else "completed"
         )
+        finished_at = row.phase_updated_at if status in ("completed", "failed", "cancelled") else None
+        duration_end = finished_at or (_now() if row.started_at else None)
+        duration_ms = (
+            max(0, int((duration_end - row.started_at).total_seconds() * 1000))
+            if duration_end and row.started_at
+            else None
+        )
         summaries.append(
             {
                 "id": row.id,
@@ -418,6 +442,9 @@ async def list_run_summaries(limit: int = 60) -> list[dict]:
                 "updated_at": row.updated_at,
                 "status": status,
                 "steps": step_count,
+                "started_at": row.started_at,
+                "finished_at": finished_at,
+                "duration_ms": duration_ms,
             }
         )
     return summaries
@@ -678,6 +705,39 @@ async def list_phases(session_id: str) -> list[SessionPhase]:
             select(SessionPhase)
             .where(SessionPhase.session_id == session_id)
             .order_by(SessionPhase.created_at)
+        )
+        return list(result.scalars().all())
+
+
+async def append_run_event(session_id: str, event: str, data: dict) -> SessionRunEvent:
+    sf = session_factory()
+    async with sf() as db:
+        record = SessionRunEvent(session_id=session_id, event=event, data=data)
+        db.add(record)
+        await db.execute(
+            update(Session).where(Session.id == session_id).values(updated_at=_now())
+        )
+        await db.commit()
+        await db.refresh(record)
+        return record
+
+
+async def list_run_events(
+    session_id: str,
+    *,
+    after_seq: int = 0,
+    limit: int = 1000,
+) -> list[SessionRunEvent]:
+    sf = session_factory()
+    async with sf() as db:
+        result = await db.execute(
+            select(SessionRunEvent)
+            .where(
+                SessionRunEvent.session_id == session_id,
+                SessionRunEvent.id > after_seq,
+            )
+            .order_by(SessionRunEvent.id)
+            .limit(limit)
         )
         return list(result.scalars().all())
 

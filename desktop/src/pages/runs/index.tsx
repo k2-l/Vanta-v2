@@ -23,7 +23,7 @@ import {
 import { ipc } from "@/ipc/client";
 import { useUi } from "@/stores/ui";
 import { useConnection } from "@/stores/connection";
-import { formatRelative } from "@/lib/format";
+import { formatDuration, formatRelative } from "@/lib/format";
 import type { RunSummaryWire } from "@/contracts/stream";
 import { RUN_STATUS_META } from "@/features/runs/projection";
 import { useRunProjection } from "@/features/runs/useRuns";
@@ -50,6 +50,7 @@ export function RunsPage() {
   const authenticated = useConnection((s) => s.auth.authenticated);
   const eventReplay = useConnection((s) => s.capabilities.eventReplay);
   const runSnapshot = useConnection((s) => s.capabilities.runSnapshot);
+  const runHistory = useConnection((s) => s.capabilities.runHistory);
   const status = useUi((s) => s.modules.runs.filter) ?? "all";
   const setFilter = useUi((s) => s.setFilter);
   const selectedId = useUi((s) => s.modules.runs.selectedId);
@@ -128,7 +129,7 @@ export function RunsPage() {
             运行订阅已中断：{detailErrorMessage ?? "请重新加载快照"}
           </div>
         )}
-        <RunDetailBody projection={projection} eventReplay={eventReplay} />
+        <RunDetailBody projection={projection} eventReplay={eventReplay} runHistory={runHistory} />
         <Button size="sm" variant="secondary" className="mt-1 w-full" onClick={backToChat}>
           <MessageSquare size={14} />
           回到来源会话
@@ -177,7 +178,7 @@ export function RunsPage() {
                   onClick={() => select("runs", run.id)}
                   leading={<StatusDot tone={meta.tone} pulse={run.status === "running"} size={9} />}
                   title={run.title || "未命名运行"}
-                  subtitle={`${run.steps} 阶段 · ${formatRelative(run.updated_at)}`}
+                  subtitle={`${run.steps} 阶段 · ${run.duration_ms != null ? formatDuration(run.duration_ms) : "尚未开始"}`}
                   meta={formatRelative(run.updated_at)}
                   trailing={
                     <StatusBadge tone={meta.tone} pulse={run.status === "running"}>

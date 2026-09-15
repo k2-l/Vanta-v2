@@ -1,5 +1,6 @@
 """客户端基础对话所依赖的后端降级与工作区回归。"""
 
+import json
 import os
 import tempfile
 import unittest
@@ -12,6 +13,7 @@ from harness.core.capabilities.memory import automatic_memory_available, recall_
 from harness.core.runtime import _persist_answer, _remember_best_effort
 from harness.infra.settings import get_settings
 from harness.providers import get_provider
+from harness.routes.chat import _record_runtime_event
 from harness.tools.builtin.cmd.file_ops import _sandbox_path
 from harness.tools.builtin.cmd.shell import _exec_command, _resolve_cwd
 
@@ -54,10 +56,56 @@ class OptionalMemoryTests(unittest.IsolatedAsyncioTestCase):
             append.assert_awaited_once()
 
 
+class RunHistoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_structured_history_is_redacted_before_persisting(self) -> None:
+        event = {
+            "event": "tool_call",
+            "data": json.dumps(
+                {
+                    "type": "tool_call",
+                    "tool": "http",
+                    "inputs": {
+                        "authorization": "Bearer abcdefghijklmnopqrstuvwxyz",
+                        "password": "plain-secret-value",
+                    },
+                }
+            ),
+        }
+        with patch(
+            "harness.routes.chat.db.append_run_event",
+            new=AsyncMock(),
+        ) as append:
+            await _record_runtime_event("session-1", event)
+
+        append.assert_awaited_once()
+        persisted = append.await_args.args[2]
+        self.assertNotIn("abcdefghijklmnopqrstuvwxyz", str(persisted))
+        self.assertNotIn("plain-secret-value", str(persisted))
+        self.assertIn("[REDACTED:CREDENTIAL]", str(persisted))
+
+    async def test_phase_is_archived_broadcast_and_upserted_in_order(self) -> None:
+        event = {
+            "event": "phase",
+            "data": json.dumps({"type": "phase", "id": "agent", "status": "running"}),
+        }
+        with (
+            patch("harness.routes.chat.db.append_run_event", new=AsyncMock()) as append,
+            patch("harness.routes.chat.db.upsert_phase", new=AsyncMock()) as upsert,
+            patch("harness.routes.chat.event_bus.publish", new=AsyncMock()) as publish,
+        ):
+            await _record_runtime_event("session-1", event)
+
+        append.assert_awaited_once()
+        publish.assert_awaited_once()
+        upsert.assert_awaited_once_with("agent", "session-1", event_data := json.loads(event["data"]))
+        self.assertEqual(event_data["status"], "running")
+
+
 class WorkspaceTests(unittest.TestCase):
     def test_providers_and_file_tools_share_existing_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"VANTA_ROOT": tmp}):
-            root = Path(tmp) / "workspace"
+            # macOS 的 /var 是 /private/var 符号链接；与生产代码一样比较真实路径。
+            root = (Path(tmp) / "workspace").resolve()
             self.assertEqual(ensure_workspace(), root)
             self.assertTrue((root / "agents").is_dir())
             self.assertTrue((root / "skills").is_dir())

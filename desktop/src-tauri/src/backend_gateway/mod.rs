@@ -45,6 +45,15 @@ pub enum ApiOperation {
         #[serde(rename = "sessionId", alias = "session_id")]
         session_id: String,
     },
+    #[serde(rename = "sessions.events")]
+    SessionsEvents {
+        #[serde(rename = "sessionId", alias = "session_id")]
+        session_id: String,
+        #[serde(default, rename = "afterSeq", alias = "after_seq")]
+        after_seq: Option<u64>,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
     #[serde(rename = "approvals.list")]
     ApprovalsList,
     #[serde(rename = "approvals.decide")]
@@ -125,6 +134,16 @@ impl ApiOperation {
             ApiOperation::SessionsPhases { session_id } => Resolved {
                 method: Method::Get,
                 path: format!("/sessions/{session_id}/phases"),
+                body: None,
+                auth: true,
+            },
+            ApiOperation::SessionsEvents { session_id, after_seq, limit } => Resolved {
+                method: Method::Get,
+                path: format!(
+                    "/sessions/{session_id}/events?after_seq={}&limit={}",
+                    after_seq.unwrap_or(0),
+                    limit.unwrap_or(1000)
+                ),
                 body: None,
                 auth: true,
             },
@@ -246,6 +265,8 @@ pub struct ServerCapabilities {
     pub api_version: Option<String>,
     #[serde(default, alias = "run_snapshot")]
     pub run_snapshot: bool,
+    #[serde(default, alias = "run_history")]
+    pub run_history: bool,
     #[serde(default, alias = "event_replay")]
     pub event_replay: bool,
     #[serde(default, alias = "run_cancel")]
@@ -383,7 +404,7 @@ mod tests {
 
     #[test]
     fn api_operations_accept_frontend_camel_case_ids() {
-        let cases: [(Value, &str); 5] = [
+        let cases: [(Value, &str); 6] = [
             (
                 json!({ "op": "sessions.messages", "sessionId": "session-1", "limit": 20 }),
                 "/sessions/session-1/messages?limit=20",
@@ -391,6 +412,10 @@ mod tests {
             (
                 json!({ "op": "sessions.phases", "sessionId": "session-1" }),
                 "/sessions/session-1/phases",
+            ),
+            (
+                json!({ "op": "sessions.events", "sessionId": "session-1", "afterSeq": 7, "limit": 25 }),
+                "/sessions/session-1/events?after_seq=7&limit=25",
             ),
             (
                 json!({ "op": "budget.get", "sessionId": "session-1" }),

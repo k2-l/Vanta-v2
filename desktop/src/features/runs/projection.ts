@@ -83,6 +83,9 @@ export type RunProjection = {
   order: number;
   /** run_subscribe 快照去重游标。 */
   snapshotSeq: number;
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
 };
 
 export function emptyProjection(sessionId?: string): RunProjection {
@@ -333,6 +336,26 @@ export function applyPhasesSnapshot(
   }
   p.order = prev.order + rows.length + 1;
   if (rows.length > 0 && p.status !== "cancelled") p.status = deriveRunStatus(p);
+  const starts = rows
+    .map((row) => row.created_at)
+    .filter((value): value is string => Boolean(value))
+    .map((value) => ({ value, time: new Date(value).getTime() }))
+    .filter((item) => Number.isFinite(item.time));
+  const updates = rows
+    .map((row) => row.updated_at)
+    .filter((value): value is string => Boolean(value))
+    .map((value) => ({ value, time: new Date(value).getTime() }))
+    .filter((item) => Number.isFinite(item.time));
+  if (starts.length > 0) {
+    const started = starts.reduce((earliest, item) => (item.time < earliest.time ? item : earliest));
+    p.startedAt = started.value;
+    const terminal = p.status === "completed" || p.status === "failed" || p.status === "cancelled";
+    const finished = terminal && updates.length > 0
+      ? updates.reduce((latest, item) => (item.time > latest.time ? item : latest))
+      : undefined;
+    p.finishedAt = finished?.value;
+    p.durationMs = Math.max(0, (finished?.time ?? Date.now()) - started.time);
+  }
   return p;
 }
 

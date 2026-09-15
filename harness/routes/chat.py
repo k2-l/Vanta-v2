@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from typing import Annotated
@@ -21,6 +22,7 @@ from harness.infra.event_bus import event_bus
 from harness.infra.logging import log
 from harness.security.approvals import list_pending, resolve_approval
 from harness.security.audit_ledger import append_audit, query_audit
+from harness.security.redaction import redact
 
 router = APIRouter(tags=["chat"])
 _runtime = AgentRuntime()
@@ -28,6 +30,74 @@ _runtime = AgentRuntime()
 # 只广播 WS 专用的 task 状态事件；SSE 已经负责 worker_start/end、tool_call 等流事件，
 # 不重复广播，避免前端 applyEvent 对同一事件执行两次。
 _BROADCAST_TYPES = {"phase", "task_log"}
+# 正文由 messages 表保存；这里只持久化重建运行详情所需的结构化遥测，避免逐 token 写库。
+_RUN_HISTORY_TYPES = {
+    "tool_call",
+    "tool_result",
+    "tool_error",
+    "worker_start",
+    "worker_end",
+    "usage",
+    "phase",
+    "task_log",
+    "done",
+}
+_SENSITIVE_EVENT_KEYS = (
+    "authorization",
+    "api_key",
+    "access_key",
+    "private_key",
+    "password",
+    "passwd",
+    "secret",
+    "token",
+)
+
+
+def _redact_event_value(value):
+    """递归脱敏后再写运行历史，避免工具输入/输出中的高置信凭据落盘。"""
+
+    if isinstance(value, str):
+        return redact(value)[0]
+    if isinstance(value, list):
+        return [_redact_event_value(item) for item in value]
+    if isinstance(value, dict):
+        redacted = {}
+        for key, item in value.items():
+            normalized_key = str(key).lower().replace("-", "_")
+            if isinstance(item, str) and any(marker in normalized_key for marker in _SENSITIVE_EVENT_KEYS):
+                redacted[key] = "[REDACTED:CREDENTIAL]"
+            else:
+                redacted[key] = _redact_event_value(item)
+        return redacted
+    return value
+
+
+async def _record_runtime_event(session_id: str, event: dict[str, str]) -> None:
+    event_name = event.get("event", "")
+    if event_name not in _BROADCAST_TYPES | _RUN_HISTORY_TYPES:
+        return
+    try:
+        payload = json.loads(event.get("data", "{}"))
+        if event_name in _RUN_HISTORY_TYPES:
+            await db.append_run_event(
+                session_id,
+                event_name,
+                _redact_event_value(payload),
+            )
+        if event_name in _BROADCAST_TYPES:
+            await event_bus.publish(session_id, payload)
+            if event_name == "phase" and payload.get("id"):
+                # 同一 phase_id 的 running→ok 必须按发射顺序落库，避免迟到写覆盖终态。
+                await db.upsert_phase(payload["id"], session_id, payload)
+    except Exception as exc:  # noqa: BLE001
+        # 遥测落库/广播是运行可观测性，不得阻断对话正文继续返回。
+        log.warning(
+            "chat.runtime_event_record.failed",
+            session_id=session_id,
+            event=event_name,
+            error=str(exc)[:120],
+        )
 
 
 @router.post("/chat")
@@ -41,25 +111,35 @@ async def chat(
         session_id = s.id
 
     async def event_gen():
-        yield {"event": "session", "data": session_id}
-        async for ev in _runtime.stream_events(
-            req.message, session_id, execution_env=req.execution_env or "local"
-        ):
-            yield ev
-            # Broadcast task-related events to WebSocket subscribers
-            # ev is always dict[str, str] — isinstance check is redundant
-            if ev.get("event") in _BROADCAST_TYPES:
+        event_queue: asyncio.Queue[dict[str, str] | None] = asyncio.Queue()
+
+        async def history_writer() -> None:
+            while (event := await event_queue.get()) is not None:
+                await _record_runtime_event(session_id, event)
+
+        writer = asyncio.create_task(history_writer())
+        try:
+            yield {"event": "session", "data": session_id}
+            async for ev in _runtime.stream_events(
+                req.message, session_id, execution_env=req.execution_env or "local"
+            ):
+                # 单写入协程保持事件顺序，同时不让数据库提交延迟 SSE 正文。
+                event_queue.put_nowait(ev)
+                yield ev
+        finally:
+            event_queue.put_nowait(None)
+            try:
+                await asyncio.wait_for(asyncio.shield(writer), timeout=5)
+            except TimeoutError:
+                writer.cancel()
                 try:
-                    payload = json.loads(ev.get("data", "{}"))
-                    await event_bus.publish(session_id, payload)
-                    if ev.get("event") == "phase" and payload.get("id"):
-                        # 顺序 await（而非 fire-and-forget create_task）：保证同一 phase_id
-                        # 的 running→ok 按发射顺序落库（独立事务并发会让 ok 被迟到的 running
-                        # 覆盖成 stale 状态），且任务引用不丢失（避免被 GC 提前回收），
-                        # upsert 异常也归入下方 try/except 统一记日志。
-                        await db.upsert_phase(payload["id"], session_id, payload)
-                except Exception as e:
-                    log.warning("chat.broadcast.failed", session_id=session_id, error=str(e)[:120])
+                    await writer
+                except asyncio.CancelledError:
+                    pass
+                log.warning("chat.runtime_event_flush.timeout", session_id=session_id)
+            except asyncio.CancelledError:
+                # 客户端断开时 writer 仍由事件循环持有并完成已排队的遥测。
+                pass
 
     return EventSourceResponse(event_gen())
 

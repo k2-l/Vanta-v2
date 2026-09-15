@@ -118,14 +118,16 @@ npm run tauri:build   # 打包
   幂等对账（按 phase id 去重、断线重新拉快照而非按 seq 重放）。
 - 对话：流式期间内联步骤卡（阶段 + 工具）、用量、错误恢复（重试）与输入器状态机；
   运行详情面板实时展示 Agent 树 / 时间线 / 用量。
-- 运行页：列表 = sessions（复用缓存）+ 每个 run 的 phases 快照派生状态/步骤；
-  状态/时间筛选；详情由快照重建（Agent 树 / 时间线）。
+- 运行页：`GET /runs` 一次聚合状态、阶段数与耗时，避免逐会话拉 phases 的 N+1；
+  支持状态/时间筛选，详情由阶段快照与结构化运行历史共同重建。
+- 历史遥测：后端持久化经过凭据脱敏的 phase / tool / worker / task_log / usage / done，
+  `GET /sessions/{id}/events` 支持 seq 游标；升级后产生的旧运行可恢复工具结果、Token 与耗时。
 - `run_subscribe`（Rust）：无 WS 依赖，改为轮询 `/sessions/{id}/phases` 作为带自增 seq 的
   `snapshot` 包推送，终态或客户端停止即结束；Runs 详情已接入该订阅，页面卸载时自动停止。
 - 历史对话的运行详情会从 phases 快照恢复；空快照不再被误判为完成，失败快照保持失败终态。
 - 投影层覆盖公开文本、工具结果、用量、乱序 phase 树和 snapshot seq 去重测试。
-- 能力协商如实：后端 `run_snapshot=True`（快照可用），`event_replay=False`（不支持按序重放，
-  详情面板显式降级提示），`run_cancel=False`。
+- 能力协商如实：后端 `run_snapshot=True`、`run_history=True`；`event_replay=False`
+  （正文 delta 仍不做完整重放，详情面板显式降级提示），`run_cancel=False`。
 - 对话 ↔ 运行双向跳转（共享 session_id）。
 
 ## G3 新增（审批与产物闭环）

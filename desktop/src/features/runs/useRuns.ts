@@ -9,14 +9,12 @@ import { ipc } from "@/ipc/client";
 import { runSubscribe } from "@/ipc/run";
 import { useConnection } from "@/stores/connection";
 import { toClientError } from "@/contracts/errors";
-import type { PhaseSnapshotRow } from "@/contracts/stream";
+import type { PhaseSnapshotRow, RunEventWire, StreamPacket } from "@/contracts/stream";
 import {
   applyPacket,
   applyPhasesSnapshot,
-  deriveRunStatus,
   emptyProjection,
   type RunProjection,
-  type RunStatus,
 } from "./projection";
 
 export function useSessionPhases(sessionId: string | undefined) {
@@ -37,17 +35,39 @@ export function useSessionPhases(sessionId: string | undefined) {
   });
 }
 
-export function projectionFromPhases(sessionId: string, rows: PhaseSnapshotRow[]): RunProjection {
-  const p = applyPhasesSnapshot(emptyProjection(sessionId), rows);
-  return { ...p, status: deriveRunStatus(p) };
+export function useSessionRunEvents(sessionId: string | undefined) {
+  const connectionId = useConnection((s) => s.activeConnectionId);
+  const authed = useConnection((s) => s.auth.authenticated);
+  const runSnapshot = useConnection((s) => s.capabilities.runSnapshot);
+  const runHistory = useConnection((s) => s.capabilities.runHistory);
+  return useQuery<RunEventWire[]>({
+    queryKey: ["run-events", connectionId, sessionId],
+    enabled: Boolean(connectionId && authed && runSnapshot && runHistory && sessionId),
+    placeholderData: [],
+    staleTime: 5_000,
+    queryFn: async () => {
+      const result = await ipc("api_request", {
+        connectionId: connectionId!,
+        operation: { op: "sessions.events", sessionId: sessionId!, limit: 2000 },
+      });
+      return Array.isArray(result) ? (result as RunEventWire[]) : [];
+    },
+  });
 }
 
-export type RunSummary = { status: RunStatus; steps: number; loaded: boolean };
-
-export function summaryFromPhases(rows: PhaseSnapshotRow[] | undefined): RunSummary {
-  if (!rows) return { status: "queued", steps: 0, loaded: false };
-  const p = projectionFromPhases("", rows);
-  return { status: p.status, steps: rows.length, loaded: true };
+export function projectionFromHistory(
+  sessionId: string,
+  phases: PhaseSnapshotRow[],
+  events: RunEventWire[],
+): RunProjection {
+  const history = [...events]
+    .sort((a, b) => a.seq - b.seq)
+    .reduce(
+      (projection, event) =>
+        applyPacket(projection, { event: event.event, data: event.data } as unknown as StreamPacket),
+      emptyProjection(sessionId),
+    );
+  return applyPhasesSnapshot(history, phases);
 }
 
 /**
@@ -58,10 +78,15 @@ export function useRunProjection(sessionId: string | undefined) {
   const connectionId = useConnection((s) => s.activeConnectionId);
   const authed = useConnection((s) => s.auth.authenticated);
   const runSnapshot = useConnection((s) => s.capabilities.runSnapshot);
+  const runHistory = useConnection((s) => s.capabilities.runHistory);
   const phases = useSessionPhases(sessionId);
+  const events = useSessionRunEvents(sessionId);
   const baseline = useMemo(
-    () => (sessionId && phases.data ? projectionFromPhases(sessionId, phases.data) : undefined),
-    [sessionId, phases.data],
+    () =>
+      sessionId && phases.data && events.data
+        ? projectionFromHistory(sessionId, phases.data, events.data)
+        : undefined,
+    [events.data, phases.data, sessionId],
   );
   const [projection, setProjection] = useState<RunProjection>();
   const [subscribing, setSubscribing] = useState(false);
@@ -105,6 +130,7 @@ export function useRunProjection(sessionId: string | undefined) {
         if (packet.event === "snapshot") {
           reconnectAttempts.current = 0;
           setSubscriptionError(undefined);
+          if (runHistory) void events.refetch();
         }
         if (packet.event === "client_error") {
           setSubscriptionError(toClientError(packet.data).message);
@@ -134,20 +160,25 @@ export function useRunProjection(sessionId: string | undefined) {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (handleId) void ipc("stream_stop", { handleId });
     };
-  }, [authed, baseline, connectionId, reconnectTick, runSnapshot, sessionId]);
+  }, [authed, baseline, connectionId, reconnectTick, runHistory, runSnapshot, sessionId]);
 
   const refetch = async () => {
     reconnectAttempts.current = 0;
-    const result = await phases.refetch();
+    const result = runHistory
+      ? await Promise.all([phases.refetch(), events.refetch()])
+      : await phases.refetch();
     setReconnectTick((value) => value + 1);
     return result;
   };
 
   return {
     projection,
-    isLoading: phases.isLoading,
-    isError: phases.isError || Boolean(subscriptionError),
-    error: subscriptionError ?? (phases.error ? toClientError(phases.error).message : undefined),
+    isLoading: phases.isLoading || events.isLoading,
+    isError: phases.isError || events.isError || Boolean(subscriptionError),
+    error:
+      subscriptionError ??
+      (phases.error ? toClientError(phases.error).message : undefined) ??
+      (events.error ? toClientError(events.error).message : undefined),
     isLive: subscribing,
     refetch,
   };
