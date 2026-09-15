@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { AlertTriangle, FileText, FileWarning, Package } from "lucide-react";
 import { Button } from "@/components/Button";
 import {
@@ -23,6 +23,8 @@ import { useConnection } from "@/stores/connection";
 import { formatBytes, formatRelative } from "@/lib/format";
 import type { ArtifactWire } from "@/contracts/resources";
 import { toClientError } from "@/contracts/errors";
+import { useModuleNavigation } from "@/app/moduleNavigation";
+import { ipc } from "@/ipc/client";
 import {
   isSecret,
   kindLabel,
@@ -37,6 +39,8 @@ function bytesOf(content?: string): number {
 }
 
 export function ArtifactsPage() {
+  const openModule = useModuleNavigation();
+  const connectionId = useConnection((s) => s.activeConnectionId);
   const connected = useConnection((s) => Boolean(s.activeConnectionId && s.auth.authenticated));
   const offline = useConnection((s) => s.status === "offline");
   const exportSupported = useConnection((s) => s.capabilities.artifactExport);
@@ -44,32 +48,67 @@ export function ArtifactsPage() {
   const setFilter = useUi((s) => s.setFilter);
   const selectedId = useUi((s) => s.modules.artifacts.selectedId);
   const select = useUi((s) => s.select);
+  const [sourceFilter, setSourceFilter] = useState("all");
+  const [exportingId, setExportingId] = useState<string>();
+  const [exportMessage, setExportMessage] = useState<{ text: string; error?: boolean }>();
 
   const artifacts = useArtifacts();
   const all = artifacts.data ?? [];
 
   const kinds = useMemo(() => Array.from(new Set(all.map((a) => a.kind))), [all]);
+  const sources = useMemo(
+    () => Array.from(new Set(all.map((a) => a.source_session_id).filter((id): id is string => Boolean(id)))),
+    [all],
+  );
   const counts = useMemo(() => {
     const map: Record<string, number> = { all: all.length };
     for (const a of all) map[a.kind] = (map[a.kind] ?? 0) + 1;
     return map;
   }, [all]);
 
-  const items = kindFilter === "all" ? all : all.filter((a) => a.kind === kindFilter);
+  const items = all
+    .filter((a) => kindFilter === "all" || a.kind === kindFilter)
+    .filter((a) => sourceFilter === "all" || a.source_session_id === sourceFilter);
   const selected = (selectedId ? all.find((a) => a.id === selectedId) : undefined) ?? items[0];
 
   const toModel = (a: ArtifactWire): ArtifactPreviewModel => ({
     id: a.id,
     name: a.title,
     typeLabel: kindLabel(a.kind),
-    sizeLabel: isSecret(a) ? "—" : formatBytes(bytesOf(a.content)),
-    sourceSession: a.producer || a.engagement_id || "未知来源",
-    updatedAtLabel: a.created_at ? formatRelative(a.created_at) : "",
+    sizeLabel: typeof a.size_bytes === "number" ? formatBytes(a.size_bytes) : isSecret(a) ? "—" : formatBytes(bytesOf(a.content)),
+    sourceSession: a.source_session_id || a.producer || a.engagement_id || "未知来源",
+    updatedAtLabel: a.updated_at ? formatRelative(a.updated_at) : a.created_at ? formatRelative(a.created_at) : "",
     previewKind: previewKindFor(a),
     preview: a.content,
     highRisk: isSecret(a),
-    exportSupported,
+    exportSupported: exportSupported && !isSecret(a) && Boolean(a.content),
+    exportDisabledReason: isSecret(a)
+      ? "机密产物不允许导出正文"
+      : !a.content
+        ? "产物没有可导出的正文"
+        : !exportSupported
+          ? "服务器未声明导出能力"
+          : undefined,
   });
+
+  const openSource = (module: "chat" | "runs", sourceId?: string) => {
+    if (!sourceId) return;
+    openModule(module, { selectedId: sourceId, detailOpen: true });
+  };
+
+  const exportArtifact = async (artifact: ArtifactWire) => {
+    if (!connectionId || exportingId) return;
+    setExportingId(artifact.id);
+    setExportMessage(undefined);
+    try {
+      const result = await ipc("artifact_export", { connectionId, artifactId: artifact.id });
+      setExportMessage({ text: `已安全导出到 ${result.path}（${formatBytes(result.bytes)}）` });
+    } catch (error) {
+      setExportMessage({ text: toClientError(error).message, error: true });
+    } finally {
+      setExportingId(undefined);
+    }
+  };
 
   const rail = (
     <ContextRail title="产物">
@@ -84,12 +123,32 @@ export function ArtifactsPage() {
           onClick={() => setFilter("artifacts", k)}
         />
       ))}
+      <RailGroupLabel>来源会话</RailGroupLabel>
+      <RailItem label="全部来源" selected={sourceFilter === "all"} onClick={() => setSourceFilter("all")} />
+      {sources.map((source) => (
+        <RailItem
+          key={source}
+          label={source.length > 18 ? `${source.slice(0, 18)}…` : source}
+          count={all.filter((a) => a.source_session_id === source).length}
+          selected={sourceFilter === source}
+          onClick={() => setSourceFilter(source)}
+        />
+      ))}
     </ContextRail>
   );
 
   return (
     <ModuleLayout module="artifacts" rail={rail}>
-      <ContentHeader title="产物" subtitle="看板 artifact · 来源追踪 · 受控预览（secret 仅元数据）" />
+      <ContentHeader title="产物" subtitle="看板 artifact · 来源追踪 · 受控预览与导出（secret 仅元数据）" />
+      {exportMessage && (
+        <div
+          className="mx-4 mt-3 rounded-[var(--radius)] border px-3 py-2 text-[12px]"
+          style={{ borderColor: exportMessage.error ? "var(--danger)" : "var(--ok)", color: exportMessage.error ? "var(--danger)" : "var(--ok)" }}
+          role="status"
+        >
+          {exportMessage.text}
+        </div>
+      )}
       {!connected ? (
         offline ? <OfflineState /> : <EmptyState icon={Package} title="连接后查看产物" hint="产物由 agent 的 board 工具产出。" />
       ) : artifacts.isLoading ? (
@@ -131,9 +190,10 @@ export function ArtifactsPage() {
             {selected ? (
               <ArtifactPreview
                 model={toModel(selected)}
-                onExport={() => {
-                  /* 导出走 Rust Core 安全路径选择（artifact_export，capability 门控） */
-                }}
+                onExport={() => exportArtifact(selected)}
+                exporting={exportingId === selected.id}
+                onOpenSourceChat={selected.source_session_id ? () => openSource("chat", selected.source_session_id) : undefined}
+                onOpenSourceRun={selected.source_run_id ? () => openSource("runs", selected.source_run_id) : undefined}
               />
             ) : (
               <EmptyState title="选择一个产物预览" />

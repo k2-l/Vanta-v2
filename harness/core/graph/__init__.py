@@ -1,6 +1,6 @@
 """graph — LangGraph 接线层：
 
-  - build.py     ：主图组装（build_graph + compiled_graph 单例）
+  - build.py     ：主图组装（build_graph + get_graph）
   - routes.py    ：路由谓词（主图 + 子图）
   - nodes/       ：主图节点（preprocess / agent / tool / recovery / summarize）
   - tool_exec.py ：共享单工具执行内核（主图 + 子图共用）

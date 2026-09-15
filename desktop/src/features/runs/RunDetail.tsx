@@ -3,10 +3,14 @@
  * Agent 树来自 phase 图；用量为独立 token；时间线合并 phase 与工具事件。
  */
 
+import { Package } from "lucide-react";
+import { Button } from "@/components/Button";
 import { DetailSection, DetailField } from "@/components/desktop/DetailPanel";
 import { RunTimeline } from "@/components/desktop/RunTimeline";
 import { StatusBadge, StatusDot } from "@/components/desktop/status";
 import { formatDuration, formatTokens } from "@/lib/format";
+import { useArtifacts } from "@/features/artifacts/useArtifacts";
+import { useModuleNavigation } from "@/app/moduleNavigation";
 import {
   PHASE_TONE,
   RUN_STATUS_META,
@@ -91,6 +95,8 @@ export function RunDetailBody({
   /** 后端是否持久化结构化运行遥测。 */
   runHistory: boolean;
 }) {
+  const openModule = useModuleNavigation();
+  const artifacts = useArtifacts(undefined, projection.sessionId, true);
   const meta = RUN_STATUS_META[projection.status];
   const timeline = deriveTimeline(projection);
   return (
@@ -130,6 +136,31 @@ export function RunDetailBody({
 
       <DetailSection title="事件时间线">
         <RunTimeline items={timeline.map((t) => ({ id: t.id, label: t.label, detail: t.detail, at: "", tone: t.tone }))} />
+      </DetailSection>
+
+      <DetailSection title={`关联产物${artifacts.data?.length ? `（${artifacts.data.length}）` : ""}`}>
+        {artifacts.isLoading ? (
+          <p className="text-[12px]" style={{ color: "var(--fg-subtle)" }}>加载关联产物…</p>
+        ) : artifacts.isError ? (
+          <p className="text-[12px]" style={{ color: "var(--warn)" }}>关联产物暂不可用</p>
+        ) : artifacts.data?.length ? (
+          <div className="flex flex-col gap-1.5">
+            {artifacts.data.slice(0, 5).map((artifact) => (
+              <Button
+                key={artifact.id}
+                size="xs"
+                variant="ghost"
+                className="w-full justify-start"
+                onClick={() => openModule("artifacts", { selectedId: artifact.id })}
+              >
+                <Package size={13} />
+                <span className="truncate">{artifact.title}</span>
+              </Button>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[12px]" style={{ color: "var(--fg-subtle)" }}>本运行尚无关联产物。</p>
+        )}
       </DetailSection>
 
       {!eventReplay && (

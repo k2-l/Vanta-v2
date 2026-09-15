@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,12 @@ _FORBIDDEN_NAMES: frozenset[str] = frozenset({
     "authorized_keys", "known_hosts",
     ".ssh", ".gnupg", ".aws",
 })
+
+
+def _write_text(path: Path, content: str, append: bool) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a" if append else "w", encoding="utf-8") as stream:
+        stream.write(content)
 
 
 def _sandbox_path(path: str) -> tuple[Path | None, str | None]:
@@ -138,9 +145,7 @@ class WriteFileTool(Tool):
             if err:
                 return ToolResult.fail(error=err, error_code="PERMISSION_DENIED")
 
-            p.parent.mkdir(parents=True, exist_ok=True)
-            with open(p, "a" if mode == "append" else "w", encoding="utf-8") as f:
-                f.write(content)
+            await asyncio.to_thread(_write_text, p, content, mode == "append")
             verb = "追加" if mode == "append" else "写入"
             return ToolResult(ok=True, output=f"已{verb}：{p}（{len(content)} 字节）")
         except Exception as exc:  # noqa: BLE001

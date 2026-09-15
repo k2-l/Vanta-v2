@@ -3,9 +3,9 @@
 use crate::backend_gateway::{self, HealthResult, ServerCapabilities};
 use crate::connections::{ConnectionDraft, ConnectionProfile};
 use crate::credentials;
-use crate::error::CmdResult;
+use crate::error::{CmdResult, ErrorKind};
 use crate::state::AppState;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 #[tauri::command]
@@ -66,7 +66,14 @@ pub struct ConnectionSession {
     pub health: HealthResult,
 }
 
-/// 激活连接：探活 + 回写版本 + 判断是否已持有令牌（不校验令牌有效性，交由后续 me 调用）。
+#[derive(Debug, Deserialize)]
+struct MeBody {
+    authenticated: bool,
+    #[serde(default)]
+    expires_at: Option<String>,
+}
+
+/// 激活连接：探活、能力协商，并用 /auth/me 验证钥匙串中的令牌。
 #[tauri::command]
 pub async fn connection_activate(state: State<'_, AppState>, id: String) -> CmdResult<ConnectionSession> {
     let base_url = state.connections.resolve_base_url(&id)?;
@@ -76,21 +83,41 @@ pub async fn connection_activate(state: State<'_, AppState>, id: String) -> CmdR
         .connections
         .mark_connected(&id, health.server_version.clone())?;
 
-    let has_token = credentials::read_token(&id)?.is_some();
-    let status = if health.ok {
-        if has_token { "online" } else { "unauthenticated" }
+    let auth = if credentials::read_token(&id)?.is_some() {
+        match backend_gateway::request(&state.connections, &id, backend_gateway::ApiOperation::Me).await {
+            Ok(value) => {
+                let body: MeBody = serde_json::from_value(value)?;
+                AuthSummary {
+                    authenticated: body.authenticated,
+                    expires_at: body.expires_at,
+                    user_label: None,
+                }
+            }
+            Err(error) => match error.kind {
+                ErrorKind::Unauthorized => {
+                    credentials::clear(&id)?;
+                    AuthSummary {
+                        authenticated: false,
+                        expires_at: None,
+                        user_label: None,
+                    }
+                }
+                _ => return Err(error),
+            },
+        }
     } else {
-        "degraded"
+        AuthSummary {
+            authenticated: false,
+            expires_at: None,
+            user_label: None,
+        }
     };
+    let status = if auth.authenticated { "online" } else { "unauthenticated" };
 
     Ok(ConnectionSession {
         connection_id: id,
         status: status.to_string(),
-        auth: AuthSummary {
-            authenticated: has_token,
-            expires_at: None,
-            user_label: None,
-        },
+        auth,
         health: HealthResult {
             capabilities: health.capabilities.clone().or_else(|| Some(ServerCapabilities::default())),
             ..health

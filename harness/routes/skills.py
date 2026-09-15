@@ -1,6 +1,6 @@
 """技能 CRUD —— 统一 EntityProvider 协议。
 
-读写全部委托给 harness.providers.get_provider("skill")，与运行时（load_skill /
+读写全部委托给 harness.providers.get_provider("skill")，与运行时（Skill /
 上下文 L1 注入）共享同一 provider 单例与同一真源 settings.skills_dir/<name>/SKILL.md。
 路由不再自持文件系统逻辑、目录默认值或 frontmatter 解析——写入即收敛为 CC 标准字段。
 向量索引（Qdrant）在写/删后 best-effort 同步。

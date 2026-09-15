@@ -33,6 +33,7 @@ import { applyPacket, emptyProjection, type RunProjection } from "@/features/run
 import { RunDetailBody } from "@/features/runs/RunDetail";
 import { useRunProjection } from "@/features/runs/useRuns";
 import { StepList } from "@/features/chat/StepList";
+import { useIsModuleActive, useModuleNavigation } from "@/app/moduleNavigation";
 
 export function ChatPage() {
   const connectionId = useConnection((state) => state.activeConnectionId);
@@ -41,6 +42,8 @@ export function ChatPage() {
   const runHistory = useConnection((state) => state.capabilities.runHistory);
   const selectStore = useUi((s) => s.select);
   const navigate = useNavigate();
+  const openModule = useModuleNavigation();
+  const moduleActive = useIsModuleActive("chat");
   const location = useLocation();
   const [selectedId, setSelectedIdLocal] = useState<string | undefined>(
     () => useUi.getState().modules.chat.selectedId ?? undefined,
@@ -148,7 +151,7 @@ export function ChatPage() {
     isError: storedRunError,
     error: storedRunErrorMessage,
     refetch: refetchStoredRun,
-  } = useRunProjection(streaming ? undefined : selectedId);
+  } = useRunProjection(streaming ? undefined : selectedId, moduleActive);
   const detailProjection = liveMatches && projection?.phaseOrder.length ? projection : storedProjection;
 
   const finish = async (sessionId?: string) => {
@@ -247,9 +250,7 @@ export function ChatPage() {
 
   const openInRuns = () => {
     if (!selectedId) return;
-    useUi.getState().select("runs", selectedId);
-    useUi.getState().setDetailOpen("runs", true);
-    navigate("/runs");
+    openModule("runs", { selectedId, detailOpen: true });
   };
 
   const detail = (

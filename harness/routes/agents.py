@@ -1,6 +1,6 @@
 """Agent CRUD —— 统一 EntityProvider 协议。
 
-读写全部委托给 harness.providers.get_provider("agent")，与运行时（run_agent /
+读写全部委托给 harness.providers.get_provider("agent")，与运行时（Agent /
 上下文 L1 注入）共享同一 provider 单例与同一真源 settings.agents_dir/<name>/AGENT.md。
 路由不再自持文件系统逻辑、目录默认值或 frontmatter 解析——写入即收敛为 CC 标准字段。
 """

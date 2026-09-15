@@ -49,7 +49,8 @@ export type ApiOperation =
   | { op: "approvals.list" }
   | { op: "approvals.decide"; callId: string; approved: boolean }
   | { op: "approvals.history"; limit?: number }
-  | { op: "artifacts.list"; kind?: string }
+  | { op: "artifacts.list"; kind?: string; sessionId?: string }
+  | { op: "artifacts.get"; artifactId: string }
   | { op: "budget.get"; sessionId: string }
   | { op: "capabilities.agents" }
   | { op: "capabilities.skills" }

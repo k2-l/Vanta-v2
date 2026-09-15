@@ -198,8 +198,6 @@ class TomlConfigSource(PydanticBaseSettingsSource):
 
         # [context] 节
         context = data.get("context", {})
-        if "compression_enabled" in context:
-            result["context_compression_enabled"] = context["compression_enabled"]
         if "model_context_window" in context:
             result["model_context_window"] = context["model_context_window"]
         if "compression_ratio" in context:
@@ -461,10 +459,7 @@ class Settings(BaseSettings):
     main_agent_token_limit: int = Field(default=200_000, gt=0)
     sub_agent_token_limit: int = Field(default=100_000, gt=0)
 
-    # 上下文压缩（Context Compression）—— 已改为「用户主动触发」，不再自动进流程。
-    # context_compression_enabled 不再驱动任何自动路由（保留字段仅为配置兼容/前端读取）；
-    # threshold 现用作前端「建议压缩」的软提示阈值（越过时提示用户，可手动压缩）。
-    context_compression_enabled: bool = True   # 【已弃用于自动路由】保留兼容
+    # 上下文压缩（Context Compression）由用户主动触发；threshold 只作软提示。
     model_context_window: int = 200_000        # 模型上下文窗口大小（tokens）
     context_compression_ratio: float = 0.80   # 「建议压缩」软提示阈值比例（默认 80%）
     # 主动压缩：喂给压缩器的原文 token 上限；超出部分由已有摘要覆盖（从原文整体重生成）

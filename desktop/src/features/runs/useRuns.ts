@@ -17,13 +17,13 @@ import {
   type RunProjection,
 } from "./projection";
 
-export function useSessionPhases(sessionId: string | undefined) {
+export function useSessionPhases(sessionId: string | undefined, active = true) {
   const connectionId = useConnection((s) => s.activeConnectionId);
   const authed = useConnection((s) => s.auth.authenticated);
   const runSnapshot = useConnection((s) => s.capabilities.runSnapshot);
   return useQuery<PhaseSnapshotRow[]>({
     queryKey: ["phases", connectionId, sessionId],
-    enabled: Boolean(connectionId && authed && runSnapshot && sessionId),
+    enabled: Boolean(active && connectionId && authed && runSnapshot && sessionId),
     staleTime: 20_000,
     queryFn: async () => {
       const result = await ipc("api_request", {
@@ -35,14 +35,14 @@ export function useSessionPhases(sessionId: string | undefined) {
   });
 }
 
-export function useSessionRunEvents(sessionId: string | undefined) {
+export function useSessionRunEvents(sessionId: string | undefined, active = true) {
   const connectionId = useConnection((s) => s.activeConnectionId);
   const authed = useConnection((s) => s.auth.authenticated);
   const runSnapshot = useConnection((s) => s.capabilities.runSnapshot);
   const runHistory = useConnection((s) => s.capabilities.runHistory);
   return useQuery<RunEventWire[]>({
     queryKey: ["run-events", connectionId, sessionId],
-    enabled: Boolean(connectionId && authed && runSnapshot && runHistory && sessionId),
+    enabled: Boolean(active && connectionId && authed && runSnapshot && runHistory && sessionId),
     placeholderData: [],
     staleTime: 5_000,
     queryFn: async () => {
@@ -74,13 +74,13 @@ export function projectionFromHistory(
  * run 详情投影：REST 快照负责首屏/重连基线，run_subscribe 负责选中运行的持续更新。
  * 卸载或切换 run 时主动停止 Rust 侧订阅，避免后台轮询泄漏。
  */
-export function useRunProjection(sessionId: string | undefined) {
+export function useRunProjection(sessionId: string | undefined, active = true) {
   const connectionId = useConnection((s) => s.activeConnectionId);
   const authed = useConnection((s) => s.auth.authenticated);
   const runSnapshot = useConnection((s) => s.capabilities.runSnapshot);
   const runHistory = useConnection((s) => s.capabilities.runHistory);
-  const phases = useSessionPhases(sessionId);
-  const events = useSessionRunEvents(sessionId);
+  const phases = useSessionPhases(sessionId, active);
+  const events = useSessionRunEvents(sessionId, active);
   const baseline = useMemo(
     () =>
       sessionId && phases.data && events.data
@@ -105,7 +105,7 @@ export function useRunProjection(sessionId: string | undefined) {
   }, [baseline]);
 
   useEffect(() => {
-    if (!connectionId || !authed || !runSnapshot || !sessionId || !baseline) return;
+    if (!active || !connectionId || !authed || !runSnapshot || !sessionId || !baseline) return;
     // 历史终态 run 由 REST 快照完整呈现，无需保持轮询。
     if (baseline.phaseOrder.length > 0 && baseline.status !== "running" && baseline.status !== "queued") return;
 
@@ -160,7 +160,7 @@ export function useRunProjection(sessionId: string | undefined) {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (handleId) void ipc("stream_stop", { handleId });
     };
-  }, [authed, baseline, connectionId, reconnectTick, runHistory, runSnapshot, sessionId]);
+  }, [active, authed, baseline, connectionId, reconnectTick, runHistory, runSnapshot, sessionId]);
 
   const refetch = async () => {
     reconnectAttempts.current = 0;

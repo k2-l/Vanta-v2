@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { MessageSquare, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/Button";
 import {
@@ -27,19 +26,22 @@ import { formatRelative } from "@/lib/format";
 import { toClientError } from "@/contracts/errors";
 import type { ApprovalDecisionRecord, ApprovalWire } from "@/contracts/resources";
 import {
+  isApprovalExpired,
   riskMeta,
   useApprovalHistory,
   useApprovals,
   useDecideApproval,
 } from "@/features/approvals/useApprovals";
 import { useDecisionLog, type Decision, type DecisionOutcome } from "@/features/approvals/decisions";
+import { useModuleNavigation } from "@/app/moduleNavigation";
 
 type Category = "pending" | DecisionOutcome | "expired";
+type HistoricalOutcome = Exclude<Category, "pending">;
 
 /** 归一化的已决策视图：服务端历史与本机记录合并后的统一形状。 */
 type DecidedView = {
   item: ApprovalWire;
-  outcome: DecisionOutcome;
+  outcome: HistoricalOutcome;
   decidedAt: string;
   source: "server" | "local";
   decisionId?: string;
@@ -55,8 +57,8 @@ function fromRecord(r: ApprovalDecisionRecord): DecidedView {
       tool_name: r.tool_name,
       message: r.message ?? "",
       session_id: r.session_id,
-      requested_at: r.decided_at,
-      expires_at: "",
+      requested_at: r.requested_at || r.decided_at,
+      expires_at: r.expires_at || "",
       risk: r.risk,
       risk_source: r.risk_source,
       target: r.target,
@@ -68,6 +70,7 @@ function fromRecord(r: ApprovalDecisionRecord): DecidedView {
     source: "server",
     decisionId: r.decision_id,
     entryHash: r.entry_hash,
+    auditRecorded: r.audit_recorded,
   };
 }
 
@@ -98,12 +101,6 @@ const EMPTY_COPY: Record<Category, { title: string; hint: string }> = {
   expired: { title: "没有已过期的审批", hint: "超过到期时间仍未处理的审批会归入此处，不可再提交。" },
 };
 
-/** 已到期判定：超过 expires_at 仍未处理即视为过期，客户端锁定提交（规范 §4.3）。 */
-function isExpired(item: ApprovalWire, now: number): boolean {
-  const t = item.expires_at ? Date.parse(item.expires_at) : NaN;
-  return Number.isFinite(t) && t <= now;
-}
-
 export function ApprovalsPage() {
   const connected = useConnection((s) => Boolean(s.activeConnectionId && s.auth.authenticated));
   const offline = useConnection((s) => s.status === "offline");
@@ -112,7 +109,7 @@ export function ApprovalsPage() {
   const setFilter = useUi((s) => s.setFilter);
   const selectedId = useUi((s) => s.modules.approvals.selectedId);
   const select = useUi((s) => s.select);
-  const navigate = useNavigate();
+  const openModule = useModuleNavigation();
 
   const approvals = useApprovals();
   const history = useApprovalHistory();
@@ -142,17 +139,18 @@ export function ApprovalsPage() {
   const [decideErrors, setDecideErrors] = useState<Record<string, string>>({});
 
   const undecided = (approvals.data ?? []).filter((a) => !decidedIds.has(a.call_id));
-  const pending = undecided.filter((a) => !isExpired(a, now));
-  const expired = undecided.filter((a) => isExpired(a, now));
+  const pending = undecided.filter((a) => !isApprovalExpired(a, now));
+  const expired = undecided.filter((a) => isApprovalExpired(a, now));
+  const expiredHistory = decidedViews.filter((d) => d.outcome === "expired");
   const counts = {
     pending: pending.length,
     approved: decidedViews.filter((d) => d.outcome === "approved").length,
     rejected: decidedViews.filter((d) => d.outcome === "rejected").length,
-    expired: expired.length,
+    expired: expired.length + expiredHistory.length,
   };
 
   const onDecide = async (item: ApprovalWire, approved: boolean) => {
-    if (isExpired(item, Date.now())) return; // 兜底：过期项禁止提交。
+    if (isApprovalExpired(item, Date.now())) return; // 兜底：过期项禁止提交。
     if (inFlight.current.has(item.call_id)) return;
     inFlight.current.add(item.call_id);
     setSubmittingIds((prev) => new Set(prev).add(item.call_id));
@@ -229,7 +227,10 @@ export function ApprovalsPage() {
     filter === "pending"
       ? pending.map((item) => ({ item, status: "pending" as const }))
       : filter === "expired"
-        ? expired.map((item) => ({ item, status: "expired" as const }))
+        ? [
+            ...expiredHistory.map((d) => ({ item: d.item, status: "expired" as const })),
+            ...expired.map((item) => ({ item, status: "expired" as const })),
+          ]
         : decidedViews
             .filter((d) => d.outcome === filter)
             .map((d) => ({ item: d.item, status: d.outcome as Category }));
@@ -282,8 +283,7 @@ export function ApprovalsPage() {
         variant="secondary"
         className="w-full"
         onClick={() => {
-          useUi.getState().select("chat", selected.item.session_id);
-          navigate("/chat");
+          openModule("chat", { selectedId: selected.item.session_id, detailOpen: true });
         }}
       >
         <MessageSquare size={14} />

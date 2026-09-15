@@ -35,21 +35,21 @@ pub enum ApiOperation {
     },
     #[serde(rename = "sessions.messages")]
     SessionsMessages {
-        #[serde(rename = "sessionId", alias = "session_id")]
+        #[serde(rename = "sessionId")]
         session_id: String,
         #[serde(default)]
         limit: Option<u32>,
     },
     #[serde(rename = "sessions.phases")]
     SessionsPhases {
-        #[serde(rename = "sessionId", alias = "session_id")]
+        #[serde(rename = "sessionId")]
         session_id: String,
     },
     #[serde(rename = "sessions.events")]
     SessionsEvents {
-        #[serde(rename = "sessionId", alias = "session_id")]
+        #[serde(rename = "sessionId")]
         session_id: String,
-        #[serde(default, rename = "afterSeq", alias = "after_seq")]
+        #[serde(default, rename = "afterSeq")]
         after_seq: Option<u64>,
         #[serde(default)]
         limit: Option<u32>,
@@ -58,7 +58,7 @@ pub enum ApiOperation {
     ApprovalsList,
     #[serde(rename = "approvals.decide")]
     ApprovalsDecide {
-        #[serde(rename = "callId", alias = "call_id")]
+        #[serde(rename = "callId")]
         call_id: String,
         approved: bool,
     },
@@ -71,10 +71,17 @@ pub enum ApiOperation {
     ArtifactsList {
         #[serde(default)]
         kind: Option<String>,
+        #[serde(default, rename = "sessionId")]
+        session_id: Option<String>,
+    },
+    #[serde(rename = "artifacts.get")]
+    ArtifactsGet {
+        #[serde(rename = "artifactId")]
+        artifact_id: String,
     },
     #[serde(rename = "budget.get")]
     BudgetGet {
-        #[serde(rename = "sessionId", alias = "session_id")]
+        #[serde(rename = "sessionId")]
         session_id: String,
     },
     #[serde(rename = "capabilities.agents")]
@@ -165,12 +172,28 @@ impl ApiOperation {
                 body: None,
                 auth: true,
             },
-            ApiOperation::ArtifactsList { kind } => Resolved {
+            ApiOperation::ArtifactsList { kind, session_id } => Resolved {
                 method: Method::Get,
-                path: match kind {
-                    Some(k) => format!("/v1/artifacts?kind={k}"),
-                    None => "/v1/artifacts".into(),
+                path: {
+                    let mut query = Vec::new();
+                    if let Some(k) = kind {
+                        query.push(format!("kind={}", encode_query_component(k)));
+                    }
+                    if let Some(id) = session_id {
+                        query.push(format!("session_id={}", encode_query_component(id)));
+                    }
+                    if query.is_empty() {
+                        "/v1/artifacts".into()
+                    } else {
+                        format!("/v1/artifacts?{}", query.join("&"))
+                    }
                 },
+                body: None,
+                auth: true,
+            },
+            ApiOperation::ArtifactsGet { artifact_id } => Resolved {
+                method: Method::Get,
+                path: format!("/v1/artifacts/{}", encode_query_component(artifact_id)),
                 body: None,
                 auth: true,
             },
@@ -214,6 +237,18 @@ impl ApiOperation {
     }
 }
 
+fn encode_query_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
 /// 按连接的 TLS 策略构建 reqwest client。
 ///
 /// custom_ca 时把指定的 PEM 证书**追加**到信任根（系统根之外增量，不降低校验强度），
@@ -246,8 +281,6 @@ pub fn build_client(ca_cert_path: Option<&str>, overall_timeout: Option<Duration
 /// /health 响应；旧后端未提供 capabilities 时缺省为全 false。
 #[derive(Debug, Deserialize)]
 struct HealthBody {
-    #[allow(dead_code)]
-    status: String,
     #[serde(default)]
     version: String,
     #[serde(default)]
@@ -289,6 +322,22 @@ pub struct HealthResult {
     pub latency_ms: Option<u64>,
 }
 
+fn validate_api_version(version: Option<&str>) -> CmdResult<()> {
+    match version {
+        Some("1") => Ok(()),
+        Some(other) => Err(ClientError::new(
+            ErrorKind::Protocol,
+            format!("后端 API 版本不受支持：{other}（客户端需要 1）"),
+            false,
+        )),
+        None => Err(ClientError::new(
+            ErrorKind::Protocol,
+            "后端未声明 API 版本，不能安全联调",
+            false,
+        )),
+    }
+}
+
 /// GET /health —— 探活 + 能力协商（连接未激活时也可用 base_url 直探）。
 /// `ca_cert_path` 供 custom_ca 连接在探活/测试时也走自定义信任根。
 pub async fn health(base_url: &str, ca_cert_path: Option<&str>) -> CmdResult<HealthResult> {
@@ -307,6 +356,7 @@ pub async fn health(base_url: &str, ca_cert_path: Option<&str>) -> CmdResult<Hea
     if caps.api_version.is_none() {
         caps.api_version = body.api_version;
     }
+    validate_api_version(caps.api_version.as_deref())?;
     Ok(HealthResult {
         ok: true,
         server_version: (!body.version.is_empty()).then_some(body.version),
@@ -399,12 +449,12 @@ pub(crate) fn map_status(status: reqwest::StatusCode) -> ClientError {
 
 #[cfg(test)]
 mod tests {
-    use super::ApiOperation;
+    use super::{validate_api_version, ApiOperation};
     use serde_json::{json, Value};
 
     #[test]
     fn api_operations_accept_frontend_camel_case_ids() {
-        let cases: [(Value, &str); 6] = [
+        let cases: [(Value, &str); 8] = [
             (
                 json!({ "op": "sessions.messages", "sessionId": "session-1", "limit": 20 }),
                 "/sessions/session-1/messages?limit=20",
@@ -429,6 +479,14 @@ mod tests {
                 json!({ "op": "approvals.history", "limit": 50 }),
                 "/chat/approvals/history?limit=50",
             ),
+            (
+                json!({ "op": "artifacts.list", "kind": "scan result", "sessionId": "session/1" }),
+                "/v1/artifacts?kind=scan%20result&session_id=session%2F1",
+            ),
+            (
+                json!({ "op": "artifacts.get", "artifactId": "artifact/1" }),
+                "/v1/artifacts/artifact%2F1",
+            ),
         ];
 
         for (value, expected_path) in cases {
@@ -438,20 +496,10 @@ mod tests {
     }
 
     #[test]
-    fn api_operations_keep_snake_case_id_aliases() {
-        let operation: ApiOperation = serde_json::from_value(json!({
-            "op": "sessions.phases",
-            "session_id": "session-1"
-        }))
-        .unwrap();
-        assert_eq!(operation.resolve().path, "/sessions/session-1/phases");
-
-        let operation: ApiOperation = serde_json::from_value(json!({
-            "op": "approvals.decide",
-            "call_id": "call-1",
-            "approved": false
-        }))
-        .unwrap();
-        assert_eq!(operation.resolve().body, Some(json!({ "approved": false })));
+    fn health_requires_the_current_backend_api_contract() {
+        assert!(validate_api_version(Some("1")).is_ok());
+        assert!(validate_api_version(Some("2")).is_err());
+        assert!(validate_api_version(None).is_err());
     }
+
 }

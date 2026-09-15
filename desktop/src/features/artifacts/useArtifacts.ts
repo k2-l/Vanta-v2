@@ -11,17 +11,17 @@ import type { ArtifactWire } from "@/contracts/resources";
 import type { Tone } from "@/components/desktop/status";
 import type { PreviewKind } from "@/components/desktop";
 
-export function useArtifacts(kind?: string) {
+export function useArtifacts(kind?: string, sessionId?: string, requireSession = false) {
   const connectionId = useConnection((s) => s.activeConnectionId);
   const authed = useConnection((s) => s.auth.authenticated);
   return useQuery<ArtifactWire[]>({
-    queryKey: ["artifacts", connectionId, kind ?? "all"],
-    enabled: Boolean(connectionId && authed),
+    queryKey: ["artifacts", connectionId, kind ?? "all", sessionId ?? "all-sources"],
+    enabled: Boolean(connectionId && authed && (!requireSession || sessionId)),
     staleTime: 15_000,
     queryFn: async () => {
       const result = await ipc("api_request", {
         connectionId: connectionId!,
-        operation: { op: "artifacts.list", kind },
+        operation: { op: "artifacts.list", kind, sessionId },
       });
       return Array.isArray(result) ? (result as ArtifactWire[]) : [];
     },
@@ -66,5 +66,13 @@ export function isSecret(a: ArtifactWire): boolean {
 
 export function previewKindFor(a: ArtifactWire): PreviewKind {
   if (isSecret(a) || !a.content) return "none";
-  return "markdown"; // evidence 为自由文本正文，按 Markdown 渲染。
+  const mediaType = a.media_type ?? "";
+  if (["image/png", "image/jpeg", "image/gif", "image/webp"].includes(mediaType) && a.content.startsWith("data:image/")) {
+    return "image";
+  }
+  if (mediaType.startsWith("image/")) return "none";
+  if (mediaType === "application/json" || mediaType === "text/x-code") return "code";
+  if (mediaType === "text/plain") return "text";
+  if (mediaType === "text/markdown" || (!mediaType && ["finding", "report", "note"].includes(a.kind))) return "markdown";
+  return "none";
 }

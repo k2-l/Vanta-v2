@@ -1,7 +1,6 @@
 /**
- * 审批数据层（Plan G3）——全局待处理队列轮询 + 决策。
- * 后端 `_pending` 为进程内内存队列；决策以 call_id 作天然幂等键：
- * resolve_approval 对已处理项返回失败，避免重复提交。
+ * 审批数据层（Plan G3）——全局待处理队列轮询 + 持久决策历史。
+ * 后端以 call_id 互斥认领待处理项，先持久化决策，再释放等待中的工具调用。
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -34,9 +33,19 @@ export function useApprovals() {
   });
 }
 
+/** 服务端下一轮清理前，客户端先把已经到期的陈旧项锁定。 */
+export function isApprovalExpired(item: ApprovalWire, now = Date.now()): boolean {
+  const expiresAt = item.expires_at ? Date.parse(item.expires_at) : Number.NaN;
+  return Number.isFinite(expiresAt) && expiresAt <= now;
+}
+
+export function activeApprovalCount(items: ApprovalWire[] | undefined, now = Date.now()): number {
+  return items?.filter((item) => !isApprovalExpired(item, now)).length ?? 0;
+}
+
 /** 全局待处理数量——导航轨未读角标与审批页共用同一查询缓存。 */
 export function useApprovalCount(): number {
-  return useApprovals().data?.length ?? 0;
+  return activeApprovalCount(useApprovals().data);
 }
 
 /**

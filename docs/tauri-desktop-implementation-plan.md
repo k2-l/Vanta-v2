@@ -8,7 +8,7 @@
 
 - React WebView 负责界面与短生命周期交互；Rust Core 负责连接、钥匙串凭据、远程请求、流式桥接和系统路径权限。Session、Run、Approval、Artifact、Capability 的业务真值在后端。
 - 桌面端不复制 Web 页面或后端 Agent 编排；WebView 不持有 JWT，也不能请求任意 URL。未获后端 capability 声明的操作必须禁用并说明原因。
-- 页面编排留在 `pages/`，数据与状态进入 `features/`；跨模块选择使用 Zustand，服务端查询使用 TanStack Query。协议变更同步 Python schema、Rust DTO/command、TypeScript 契约与 browser mock，兼容字段使用显式 alias。
+- 页面编排留在 `pages/`，数据与状态进入 `features/`；已访问模块保留挂载，跨模块选择/详情通过统一导航入口写入 Zustand，服务端查询使用 TanStack Query。协议变更同步 Python schema、Rust DTO/command、TypeScript 契约与 browser mock；工具和 IPC 入参不保留隐式旧名。
 
 ## 2. 当前基线
 
@@ -20,29 +20,29 @@
 |---|---|---|
 | G0 / G1 地基与聊天 | Tauri 2、六模块入口、连接/登录/钥匙串、受控 IPC、SSE→Channel、会话与流式回答；物理机已验证连接和基本回答 | 回答详情新包复验；登录、长会话、停止和断线端到端验证 |
 | G1.5 Shell | 设计 token、导航/侧栏/详情、主题、快捷键、响应式与通用状态组件 | 1280×720、1100×680、960×640 截图；键盘/主题/减少动态效果走查与滚动位置恢复 |
-| G2 对话与运行 | 文本/阶段/工具/用量投影；Runs 单请求聚合列表，以 phases + 脱敏结构化事件历史构建树、工具、Token、耗时和时间线，支持筛选、快照订阅、重连及 Chat↔Runs 跳转 | 停止/断线/重连真机验证；产物关联；正文 delta 重放与运行取消未提供；升级前旧运行无遥测历史 |
-| G3 审批与产物 | 真实待审批队列、批准/拒绝、过期分类；后端审批请求携带 risk/target/scope/impact（工具声明或按 category 派生并标注来源），决策以独立 decision_id 标识并写入哈希链审计账本，新增 `GET /chat/approvals/history` 服务端历史，前端合并服务端历史（权威）与本次页面会话内存记录；多卡按 call_id 独立提交，审计写入失败有明确提示；只读产物列表、Markdown 预览、secret 仅元数据 | 后端问题解决后再做审批契约真机联调；过期项持久历史；产物来源关联、多类型预览、安全导出 |
-| G4 能力与设置 | 五类真实能力目录及单来源降级；七类设置入口、连接切换清理、更新未配置提示、Rust 诊断导出 | 能力可用性/位置/同步时间、连接隔离与诊断脱敏验收；通知、签名更新、版本兼容提示 |
-| G5 质量与发布 | 局部投影、流解析、脱敏和 IPC 单元测试代码 | 组件/E2E、Python 回归、可访问性、性能、平台安装/更新/回滚及发布签字 |
+| G2 对话与运行 | 文本/阶段/工具/用量投影；Runs 单请求聚合列表，以 phases + 脱敏结构化事件历史构建树、工具、Token、耗时和时间线，支持筛选、快照订阅、重连、Chat↔Runs 跳转及关联产物入口 | 停止/断线/重连真机验证；正文 delta 重放与运行取消未提供；升级前旧运行无遥测历史 |
+| G3 审批与产物 | 真实审批队列与四态历史；风险/对象/范围/影响；decision_id + 哈希链；持久审批 outbox 与自动补账；多卡独立提交，持久化失败不放行。产物带真实大小/更新时间/媒体类型及 session/run 来源，支持类型/来源筛选、Markdown/文本/JSON/白名单图片预览、三模块互跳；Rust Core 重新拉取权威正文并以安全文件名无覆盖导出，secret 不下发也不导出 | 重启真实后端验证数据库迁移、审批/补账与真实 Tauri 导出；升级前旧产物需回填来源；二进制附件尚无独立存储契约 |
+| G4 能力与设置 | 五类真实能力目录及单来源降级；七类设置入口；模块访问后保活，切换模块不中断对话；连接切换先取消查询并重置资源上下文；激活时校验 API v1 与 `/auth/me`；更新未配置提示、Rust 诊断导出 | 能力可用性/位置/同步时间、真实连接切换与诊断脱敏验收；通知、签名更新、版本兼容提示 |
+| G5 质量与发布 | 投影、流解析、脱敏、IPC、后端协议与关键状态单元回归 | 组件/Tauri E2E、可访问性、性能、平台安装/更新/回滚及发布签字 |
 
 以下是**不能按“已完成”宣传的能力边界**：
 
-- `run ≈ session`；`run_subscribe` 约每 1.5 秒轮询 phases，snapshot sequence 是客户端序号。后端另以全局单调 seq 持久化脱敏后的结构化运行事件，声明 `run_snapshot=true`、`run_history=true`；正文 delta 不入事件历史，故仍如实声明 `event_replay=false`。`run_cancel=false`、`artifact_export=false`；停止按钮只停止当前对话流。
-- 审批历史以服务端哈希链审计账本为权威（`GET /chat/approvals/history`，进程重启后仍可查询）；本次页面会话的乐观记录只在内存保留完整请求，旧版 `vanta.approvals.decisions.*` 存储在启动时清理。按 call_id 与服务端历史合并、服务端优先；多卡提交按 call_id 独立跟踪。决策以独立 decision_id 标识，entry_hash 作为审计证据（写入失败时 `audit_recorded=false` 且 entry_hash 为空，决策仍生效，界面明确提示；页面关闭后该未入账记录不再可见）。风险/对象/范围/影响由后端在审批请求中携带（工具 `risk_level` 声明或按 category 派生并标注 `risk_source`）。仍待验收：后端问题解决后的真机联调；过期项随后端队列清理消失后无历史；审计写入失败的持久可追溯性需要后端补偿机制。
-- Artifacts 是 `/v1/artifacts` 的只读看板资源，大小由正文估算、时间来自 `created_at`；来源尚未关联到 session/run，导出入口因 capability=false 禁用。
+- `run ≈ session`；`run_subscribe` 约每 1.5 秒轮询 phases，snapshot sequence 是客户端序号。后端另以全局单调 seq 持久化脱敏后的结构化运行事件，声明 `run_snapshot=true`、`run_history=true`；正文 delta 不入事件历史，故仍如实声明 `event_replay=false`。`run_cancel=false`；停止按钮只停止当前对话流。
+- 审批历史以 `approval_history` 持久投影承接结果/过期状态，以哈希链 `entry_hash` 作为审计证据；账本失败会保留 `audit_recorded=false` 并在历史查询时按 decision_id 补账。前端只在内存保留刚提交的乐观记录，服务端历史优先；旧版敏感 localStorage 在启动时清理。待真实后端验证迁移、超时、并发决策和补账链路。
+- Artifacts 是 `/v1/artifacts` 的只读看板资源；新产物显式关联 session/run 并返回后端计算的大小、更新时间和媒体类型。导出由 Rust Core 写入系统下载目录，WebView 无法指定路径或正文；secret 拒绝导出。升级前旧产物可能没有来源，二进制附件仍需独立存储契约。
 - 能力目录来自 `/v1/agents`、`/v1/skills`、`/v1/mcp/servers`、`/v1/knowledge`、`/v1/containers`。Agent/Skill/Knowledge 的“可用”尚未验证依赖就绪；容器状态可能退回数据库记录，MCP 位置目前固定“本机”，“同步时间”只是客户端查询时间。后端未配置 Qdrant 时自动记忆与记忆召回不可用，但基本对话不依赖它们；工作区目录统一修复尚待实际进程复验。
-- 诊断导出不读取钥匙串令牌，但连接名称/URL 可含用户自填敏感内容，`redact` 只匹配有限标记。连接切换会清选择和查询缓存并重挂载页面，但不等于 Rust IPC/订阅全部取消；快速切换与迟到回调尚未验证。
+- 诊断导出不读取钥匙串令牌，但连接名称/URL 可含用户自填敏感内容，`redact` 只匹配有限标记。连接切换会清选择和连接查询、重挂载页面并触发流订阅清理；快速切换的迟到回调已有单元回归，真实 Tauri Host 下仍需验证。
 
 证据入口：[Shell](../desktop/src/app/shell/)、[运行投影](../desktop/src/features/runs/projection.ts)、[Rust 流桥接](../desktop/src-tauri/src/commands/stream.rs)、[审批记录](../desktop/src/features/approvals/decisions.ts)、[审批门/风险派生](../harness/security/approvals.py)、[审批决策/历史路由](../harness/routes/chat.py)、[产物页](../desktop/src/pages/artifacts/index.tsx)、[能力目录](../desktop/src/features/capabilities/useCapabilities.ts)、[系统命令](../desktop/src-tauri/src/commands/system.rs)。
 
-验证记录：前端 `npm run build` 与 `npm test` 通过（5 个用例，主包约 576 kB）；Rust `cargo test --locked --offline` 通过（8 个用例）。后端 42 个 unittest 与本轮 `ruff` 检查通过，新增覆盖运行历史凭据脱敏、phase 按序归档，并覆盖无 Qdrant 的回答落库、向量故障降级、工作区 Shell 执行与越界拒绝；Python 语法编译及 `git diff --check` 通过。`npm run lint` 因工作区未安装 `eslint` 无法执行。审批多卡真实交互、IPC、窗口截图、数据库新表迁移及后端重启后的真实 SSE 请求未运行；真机联调暂不可用。运行 Cargo 前须 `source ~/.cargo/env`；按用户要求，Windows 重新编译由用户执行。
+验证记录：前端 `npm run build` 与 `npm test` 通过（14 个用例，六个业务模块按需分包）；Rust `cargo test --locked --offline` 通过（9 个用例）；后端 51 个 unittest、全仓 Ruff 与 `compileall` 通过。新增覆盖模块路径、连接缓存隔离、过期审批计数、后端 OpenAPI 契约、旧工具名拒绝、API 版本门、审批持久化/补账、产物安全预览与导出。浏览器 mock 已走查 G3 页面，并验证设置表单在 Settings → Runs → Settings 切换后保留未保存输入；真实后端下的模块保活仍待下一轮真机走查。`git diff --check` 通过。本机 Rust 工具链未安装 rustfmt/clippy，`npm run lint` 因未安装 `eslint` 无法执行；真实数据库迁移、审批并发、Tauri Host 写盘与 Windows 包仍待验收。后端删除清单与保留边界见 [后端清理审计](./backend-cleanup-audit.md)。
 
 ## 3. 下一步
 
-1. 先重启后端并复验无 Qdrant 的基本对话能落库、正常发出 SSE 收尾事件，检查工作区工具默认目录和相对路径；再复验 Windows 回答详情 IPC 修复。真实后端稳定后检查登录、停止、断线/重连及连接快速切换，并完成三档窗口、键盘和主题验收。
-2. G3 后端审批风险/范围/影响、decision id 与服务端历史契约已落地；本地补齐了内存乐观记录、旧存储清理、多卡独立提交与审计失败提示。后端问题解决后再真机联调该契约；补过期历史、审计失败持久补偿、产物关联与 Rust 安全导出。
+1. 按 [后端清理与联调门禁](./backend-cleanup-audit.md) 启动真实后端，先验证 API v1、登录/失效令牌和无 Qdrant 的基本对话，再验证流式回答期间切换 Runs/Artifacts 不丢流、停止/断线/重连与连接快速切换。
+2. G3 代码闭环已补齐；重启后端执行新表/新列迁移，真机验证审批超时、并发决策、审计补账和 Rust 下载目录导出，并决定旧产物来源回填策略与二进制附件存储契约。
 3. 校正 G4 能力的依赖就绪、运行位置和后端 last_sync；验收诊断脱敏与连接隔离，接入通知、签名更新和版本兼容提示。
-4. 补 G5 单元/组件/Tauri E2E 与 Python 回归；完成可访问性、长会话和性能检查，以及 macOS 首发安装/升级/回滚、Windows/Linux 兼容矩阵和发布清单签字。
+4. 补 G5 组件/Tauri E2E；完成可访问性、长会话和性能检查，以及 macOS 首发安装/升级/回滚、Windows/Linux 兼容矩阵和发布清单签字。
 
 ## 4. 交付规则
 

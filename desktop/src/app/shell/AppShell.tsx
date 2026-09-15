@@ -1,7 +1,7 @@
 import { useEffect } from "react";
-import { Outlet } from "react-router-dom";
 import { DesktopTitleBar } from "./DesktopTitleBar";
 import { GlobalNavRail } from "./GlobalNavRail";
+import { ModuleWorkspace } from "../ModuleWorkspace";
 import { useApplyTheme } from "@/hooks/useTheme";
 import { useHotkeys } from "@/hooks/useHotkeys";
 import { useConnection } from "@/stores/connection";
@@ -30,9 +30,7 @@ export function AppShell() {
       <DesktopTitleBar />
       <div className="flex min-h-0 flex-1">
         <GlobalNavRail />
-        <div key={connectionId ?? "none"} className="min-w-0 flex-1 overflow-hidden">
-          <Outlet />
-        </div>
+        <ModuleWorkspace key={connectionId ?? "none"} />
       </div>
     </div>
   );

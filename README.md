@@ -7,10 +7,10 @@
 ## 架构
 
 ```
-web/ (React + Vite, :5173)
-  └─ SSE / WebSocket / REST → harness
-harness/   (Python / FastAPI, :8765)   编排与对话 + 管理 CRUD + 容器/podman
-workspace/                              Agent / Skill / Knowledge 文件
+desktop/  Tauri 2 + React（WebView 只访问受控 Rust IPC）
+  └─ Rust Core → SSE / REST → harness
+harness/  Python / FastAPI (:8765)   编排、对话、管理 API 与容器/podman
+workspace/                           Agent / Skill 文件及工具工作目录
 ```
 
 单一 Python 后端 + PostgreSQL，JWT（HS256）鉴权（harness 用 `[auth] secret` 签发/校验 token）。
@@ -36,11 +36,11 @@ workspace/                              Agent / Skill / Knowledge 文件
 ```bash
 # 后端（FastAPI :8765）
 uv run harness-api
-# 前端开发（Vite dev server :5173，连后端 :8765）
-cd web && npm install && npm run dev
+# 桌面客户端（通过 Tauri Rust Core 连接后端）
+cd desktop && npm install && npm run tauri:dev
 ```
 
-代码检查：后端 `uvx ruff check` / `uvx ruff format`；前端 `cd web && npm run lint`。
+代码检查：后端 `uv run ruff check harness tests`；桌面端 `cd desktop && npm test && npm run build`。
 
 ---
 
@@ -56,7 +56,7 @@ cd web && npm install && npm run dev
 | `harness/security/` | 护栏：engagement / 沙箱 / 审计 / 脱敏 / 加密库 / 权限 |
 | `harness/tools/` | 协议 B：工具基类·注册表·统一来源协议（`ToolSource`）；builtin/{cmd,security,web,orchestration} · mcp · sources/plugin |
 | `harness/app/` + `harness/main.py` | FastAPI 装配 + 启动入口 |
-| `workspace/` | Markdown 文件（agents / skills / knowledge / containers） |
+| `workspace/` | Agent / Skill Markdown 与受控工具工作目录 |
 | `data/` | `config.toml` 运行时配置（向量库用 Qdrant Cloud，无本地 chroma） |
 
 ---

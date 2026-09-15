@@ -12,14 +12,13 @@
 import { useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useUi, type ModuleId } from "@/stores/ui";
+import { moduleFromPath as matchModuleFromPath } from "@/app/moduleNavigation";
 
 export const FOCUS_SEARCH_EVENT = "vanta:focus-search";
 export const NEW_CHAT_EVENT = "vanta:new-chat";
 
 export function moduleFromPath(pathname: string): ModuleId {
-  const seg = pathname.split("/").filter(Boolean)[0];
-  const known: ModuleId[] = ["chat", "runs", "approvals", "artifacts", "capabilities", "settings"];
-  return (known as string[]).includes(seg) ? (seg as ModuleId) : "chat";
+  return matchModuleFromPath(pathname) ?? "chat";
 }
 
 export function useHotkeys(): void {

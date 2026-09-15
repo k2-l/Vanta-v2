@@ -4,7 +4,7 @@
  * 纯展示组件，只接收归一化 model。
  */
 
-import { Download, FileWarning, ImageIcon } from "lucide-react";
+import { Activity, Download, FileWarning, ImageIcon, MessageSquare } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/Button";
@@ -24,14 +24,21 @@ export type ArtifactPreviewModel = {
   highRisk?: boolean;
   /** 后端是否声明了 artifactExport 能力。 */
   exportSupported: boolean;
+  exportDisabledReason?: string;
 };
 
 export function ArtifactPreview({
   model,
   onExport,
+  onOpenSourceChat,
+  onOpenSourceRun,
+  exporting = false,
 }: {
   model: ArtifactPreviewModel;
   onExport?: () => void;
+  onOpenSourceChat?: () => void;
+  onOpenSourceRun?: () => void;
+  exporting?: boolean;
 }) {
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -47,16 +54,30 @@ export function ArtifactPreview({
             {model.typeLabel} · {model.sizeLabel} · {model.sourceSession} · {model.updatedAtLabel}
           </p>
         </div>
-        <Button
-          size="sm"
-          variant="secondary"
-          disabled={!model.exportSupported}
-          title={model.exportSupported ? "经本机 Rust Core 安全导出" : "服务器未声明导出能力"}
-          onClick={onExport}
-        >
-          <Download size={14} />
-          导出
-        </Button>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {onOpenSourceChat && (
+            <Button size="sm" variant="ghost" onClick={onOpenSourceChat} title="打开来源会话">
+              <MessageSquare size={14} />
+              会话
+            </Button>
+          )}
+          {onOpenSourceRun && (
+            <Button size="sm" variant="ghost" onClick={onOpenSourceRun} title="打开来源运行">
+              <Activity size={14} />
+              运行
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={!model.exportSupported || exporting}
+            title={model.exportSupported ? "由本机 Rust Core 导出到系统下载目录" : (model.exportDisabledReason ?? "服务器未声明导出能力")}
+            onClick={onExport}
+          >
+            <Download size={14} />
+            {exporting ? "导出中…" : "导出"}
+          </Button>
+        </div>
       </header>
 
       <div className="min-h-0 flex-1 overflow-auto p-5">
@@ -100,13 +121,19 @@ function PreviewBody({ model }: { model: ArtifactPreviewModel }) {
   if (model.previewKind === "image") {
     return (
       <div className="grid h-full place-items-center">
-        <div
-          className="flex flex-col items-center gap-2 rounded-[var(--radius-lg)] border px-10 py-14"
-          style={{ borderColor: "var(--border)", background: "var(--surface-overlay)", color: "var(--fg-subtle)" }}
-        >
-          <ImageIcon size={26} />
-          <p className="text-[12px]">图片预览（{model.sizeLabel}）</p>
-        </div>
+        {model.preview ? (
+          <img
+            src={model.preview}
+            alt={model.name}
+            className="max-h-full max-w-full rounded-[var(--radius-lg)] border object-contain"
+            style={{ borderColor: "var(--border)" }}
+          />
+        ) : (
+          <div className="flex flex-col items-center gap-2" style={{ color: "var(--fg-subtle)" }}>
+            <ImageIcon size={26} />
+            <p className="text-[12px]">图片内容不可用</p>
+          </div>
+        )}
       </div>
     );
   }

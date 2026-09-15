@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
 import { Activity, MessageSquare } from "lucide-react";
 import { Button } from "@/components/Button";
 import {
@@ -28,6 +27,7 @@ import type { RunSummaryWire } from "@/contracts/stream";
 import { RUN_STATUS_META } from "@/features/runs/projection";
 import { useRunProjection } from "@/features/runs/useRuns";
 import { RunDetailBody } from "@/features/runs/RunDetail";
+import { useIsModuleActive, useModuleNavigation } from "@/app/moduleNavigation";
 
 type TimeRange = "all" | "today" | "week";
 
@@ -55,7 +55,8 @@ export function RunsPage() {
   const setFilter = useUi((s) => s.setFilter);
   const selectedId = useUi((s) => s.modules.runs.selectedId);
   const select = useUi((s) => s.select);
-  const navigate = useNavigate();
+  const openModule = useModuleNavigation();
+  const moduleActive = useIsModuleActive("runs");
   const [timeRange, setTimeRange] = useState<TimeRange>("all");
   const connected = Boolean(connectionId && authenticated);
 
@@ -88,7 +89,7 @@ export function RunsPage() {
     error: detailErrorMessage,
     isLive,
     refetch: refetchDetail,
-  } = useRunProjection(selectedId ?? undefined);
+  } = useRunProjection(selectedId ?? undefined, moduleActive);
 
   const rail = (
     <ContextRail title="运行">
@@ -111,8 +112,7 @@ export function RunsPage() {
 
   const backToChat = () => {
     if (!selectedId) return;
-    useUi.getState().select("chat", selectedId);
-    navigate("/chat");
+    openModule("chat", { selectedId, detailOpen: true });
   };
 
   const detail =

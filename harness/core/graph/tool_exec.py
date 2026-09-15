@@ -34,7 +34,7 @@ from harness.tools.sanitizer import injection_flags, sanitize_tool_output
 
 
 def _ask_message(tool_name: str, tool_input: dict) -> str:
-    if tool_name in ("Bash", "Sudo_Bash"):
+    if tool_name == "Bash":
         return f"执行命令：{str(tool_input.get('command', ''))[:200]}？"
     return f"执行工具 {tool_name}？"
 
@@ -95,7 +95,7 @@ def _persist_and_truncate(raw: str, tool_name: str, max_output_chars: int) -> st
 
 
 # engagement 期间落审计账本的"会碰目标/系统"动作（其余内部工具不刷账本）
-_AUDITABLE_ACTIONS: frozenset[str] = frozenset({"Bash", "Sudo_Bash", "WebFetch", "WebSearch"})
+_AUDITABLE_ACTIONS: frozenset[str] = frozenset({"Bash", "WebFetch", "WebSearch"})
 
 
 async def _audit_action(

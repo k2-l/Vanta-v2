@@ -147,5 +147,4 @@ async def get_budget_status(session_id: str) -> dict:
         },
         "context_window": s.model_context_window,
         "compression_threshold": s.context_compression_threshold,
-        "compression_enabled": s.context_compression_enabled,
     }

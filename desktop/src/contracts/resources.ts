@@ -34,14 +34,17 @@ export type ApprovalDecisionRecord = {
   call_id: string;
   tool_name: string;
   session_id: string;
-  decision: "approved" | "rejected";
+  decision: "approved" | "rejected" | "expired";
   risk?: string;
   risk_source?: string;
   target?: string;
   scope?: string;
   impact?: string;
   message?: string;
+  requested_at?: string;
+  expires_at?: string;
   decided_at: string;
+  audit_recorded?: boolean;
   entry_hash?: string;
 };
 
@@ -64,9 +67,16 @@ export type ArtifactWire = {
   sensitivity: "public" | "internal" | "secret" | (string & {});
   title: string;
   content?: string;
+  /** 后端按 UTF-8 正文计算；secret 也只暴露大小，不暴露正文。 */
+  size_bytes?: number;
+  media_type?: string;
+  /** 当前 run≈session，后端仍显式返回两个字段，避免继续猜 producer。 */
+  source_session_id?: string;
+  source_run_id?: string;
   tags?: string[];
   vault_ref?: string;
   severity?: string;
   status?: string;
   created_at?: string | null;
+  updated_at?: string | null;
 };

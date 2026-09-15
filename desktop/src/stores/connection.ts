@@ -16,6 +16,7 @@ interface ConnectionState {
   serverVersion?: string;
   lastError?: string;
 
+  beginActivation: (id: string) => void;
   setActive: (id: string | null) => void;
   setStatus: (status: ConnectionStatus) => void;
   setAuth: (auth: AuthSummary) => void;
@@ -36,6 +37,15 @@ const INITIAL = {
 
 export const useConnection = create<ConnectionState>((set) => ({
   ...INITIAL,
+  beginActivation: (activeConnectionId) =>
+    set({
+      activeConnectionId,
+      status: "testing",
+      auth: { authenticated: false },
+      capabilities: DEFAULT_CAPABILITIES,
+      serverVersion: undefined,
+      lastError: undefined,
+    }),
   setActive: (activeConnectionId) => set({ activeConnectionId }),
   setStatus: (status) => set({ status }),
   setAuth: (auth) => set({ auth }),

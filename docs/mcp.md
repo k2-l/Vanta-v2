@@ -49,7 +49,7 @@ MCP 走的是协议 B 的统一接入协议（`harness/tools/source.py`）：
 ToolSourceCoordinator 统一注册/卸载/重载，drain 延迟由它负责
 ```
 
-`manager`（`harness/tools/mcp/__init__.py`）是保留旧签名的兼容门面，内部委托给 `coordinator`。见 [plugin.md](./plugin.md) 了解同一套 `ToolSource` 协议如何接入 plugin。
+MCP 生命周期函数（`harness/tools/mcp/__init__.py`）直接委托给 `coordinator`。见 [plugin.md](./plugin.md) 了解同一套 `ToolSource` 协议如何接入 plugin。
 
 ## 新增一个 MCP server（清单）
 

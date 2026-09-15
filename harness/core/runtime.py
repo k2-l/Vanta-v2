@@ -1,7 +1,7 @@
 """AgentRuntime — LangGraph 引擎入口。
 
 流程：
-  用户消息 → compiled_graph（preprocess→agent→tool→recovery）
+  用户消息 → get_graph()（preprocess→agent→tool→recovery）
            → astream_events → 映射为 Harness SSE 事件
 """
 
@@ -434,7 +434,7 @@ class AgentRuntime:
                                     )
                         if output and hasattr(output, "tool_calls"):
                             for tc in output.tool_calls or []:
-                                if tc.get("name") not in ("Agent", "run_agent"):
+                                if tc.get("name") != "Agent":
                                     continue
                                 entity = (tc.get("args") or {}).get("name", "")
                                 child_id = f"{invocation_id}/{tc.get('id', '') or uuid.uuid4().hex[:12]}"
@@ -513,9 +513,7 @@ class AgentRuntime:
                         # 编排类工具（load_agent/Skill/Agent）已作为 phase 展示，这里跳过。
                         for _tm in output.get("messages", []):
                             _tname = getattr(_tm, "name", "") or ""
-                            if not _tname or _tname in (
-                                "load_agent", "Skill", "load_skill", "Agent", "run_agent"
-                            ):
+                            if not _tname or _tname in ("load_agent", "Skill", "Agent"):
                                 continue
                             _content = str(getattr(_tm, "content", ""))
                             _inputs = _tool_inputs.get(getattr(_tm, "tool_call_id", ""), {})
@@ -579,8 +577,8 @@ class AgentRuntime:
                                             parent_id="agent",
                                         )
                                     )
-                            # 检测 Skill(旧名 load_skill) → 创建子 skill 阶段
-                            elif tc_name in ("Skill", "load_skill"):
+                            # 检测 Skill → 创建子 skill 阶段
+                            elif tc_name == "Skill":
                                 entity = args.get("name", "")
                                 if entity:
                                     sid = f"skill:{entity}"
@@ -593,8 +591,8 @@ class AgentRuntime:
                                             parent_id=_agent_phase_id(),
                                         )
                                     )
-                            # 检测 Agent(旧名 run_agent) → 创建子 agent 执行阶段
-                            elif tc_name in ("Agent", "run_agent"):
+                            # 检测 Agent → 创建子 agent 执行阶段
+                            elif tc_name == "Agent":
                                 entity = args.get("name", "")
                                 if entity:
                                     sid = f"agent/{tc.get('id', '') or uuid.uuid4().hex[:12]}"

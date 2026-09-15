@@ -4,6 +4,7 @@ import asyncio
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Annotated
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,7 +44,7 @@ def ensure_workspace() -> Path:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_app: FastAPI):
     await db.init_db()
     ensure_profile()
     from harness.infra.logging import log
@@ -145,6 +146,12 @@ class _SlowRequestMiddleware(BaseHTTPMiddleware):
         return resp
 
 
+def _write_profile(content: str) -> None:
+    path = Path(get_settings().profile_path).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -166,7 +173,7 @@ def create_app() -> FastAPI:
         return HealthResponse(status="ok", version=__version__, worker_model=get_settings().model_mid)
 
     @app.get("/metrics")
-    async def metrics(_: dict = Depends(auth_module.require_auth)) -> dict:
+    async def metrics(_: Annotated[dict, Depends(auth_module.require_auth)]) -> dict:
         """返回进程级运行指标（LLM 调用数、工具调用、缓存命中、injection 检测等）。
 
         需要 Bearer token 鉴权，防止泄露系统行为指标。
@@ -176,20 +183,19 @@ def create_app() -> FastAPI:
 
     # Profile 读写接口
     @app.get("/profile")
-    async def get_profile(_: dict = Depends(auth_module.require_auth)) -> dict:
+    async def get_profile(_: Annotated[dict, Depends(auth_module.require_auth)]) -> dict:
         """返回当前用户 profile 文本内容。"""
         from harness.infra.profile import load_profile
         return {"content": await asyncio.to_thread(load_profile)}
 
     @app.put("/profile")
-    async def put_profile(body: dict, _: dict = Depends(auth_module.require_auth)) -> dict:
+    async def put_profile(
+        body: dict,
+        _: Annotated[dict, Depends(auth_module.require_auth)],
+    ) -> dict:
         """更新用户 profile（写入 data/profile.md）。"""
-        from pathlib import Path
-        s = get_settings()
         content = body.get("content", "")
-        p = Path(s.profile_path).resolve()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        await asyncio.to_thread(p.write_text, content, "utf-8")
+        await asyncio.to_thread(_write_profile, content)
         return {"content": content}
 
     # 认证

@@ -21,14 +21,11 @@ T = TypeVar("T", bound=Tool)
 class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
-        self._aliases: dict[str, str] = {}  # 旧名 → 规范名（改名时保持存量引用可解析）
-        self._lc_tools_cache: list | None = None
         self._lc_tools_static_cache: list | None = None  # disclosure=="static" 子集缓存
         self._tools_hash_cache: int | None = None
 
     def _invalidate_caches(self) -> None:
-        """工具集变动时统一清空派生缓存（lc_tools 全量 / static 子集 / hash）。"""
-        self._lc_tools_cache = None
+        """工具集变动时统一清空派生缓存（static 子集 / hash）。"""
         self._lc_tools_static_cache = None
         self._tools_hash_cache = None
 
@@ -39,12 +36,7 @@ class ToolRegistry:
         self._invalidate_caches()
 
     def unregister(self, name: str) -> bool:
-        """注销单个工具（与 register 对称），同样清派生缓存。
-
-        与 register 一样不处理别名表的反向清理：alias 是"旧名→规范名"的静态
-        兼容映射，规范名被注销后旧名继续解析到 self._tools[name] 缺失会在 get()
-        处自然抛 KeyError，无需额外维护。返回是否真的存在并被移除。
-        """
+        """注销单个工具（与 register 对称），同样清派生缓存。"""
         if name not in self._tools:
             return False
         del self._tools[name]
@@ -65,11 +57,10 @@ class ToolRegistry:
         return names
 
     def __contains__(self, name: str) -> bool:
-        """name（经别名解析）是否已注册。供 ToolSourceCoordinator 幂等替换判断。"""
-        return self._aliases.get(name, name) in self._tools
+        """name 是否已注册。供 ToolSourceCoordinator 幂等替换判断。"""
+        return name in self._tools
 
     def get(self, name: str) -> Tool:
-        name = self._aliases.get(name, name)
         if name not in self._tools:
             raise KeyError(f"未注册的工具：{name}")
         return self._tools[name]
@@ -77,38 +68,16 @@ class ToolRegistry:
     def list(self, names: list[str] | None = None) -> list[Tool]:
         if names is None:
             return list(self._tools.values())
-        resolved = (self._aliases.get(n, n) for n in names)
-        return [self._tools[n] for n in resolved if n in self._tools]
+        return [self._tools[n] for n in names if n in self._tools]
 
     def names(self) -> list[str]:
         return list(self._tools.keys())
-
-    def alias(self, old_name: str, canonical: str) -> None:
-        """注册旧名→规范名别名。改名工具时调用，使 agent.tools/skill.allowed_tools
-        里的存量旧名仍能解析到新工具（改名兼容性约束）。"""
-        self._aliases[old_name] = canonical
-
-    def by_category(self) -> dict[str, list[Tool]]:
-        """按 Tool.category 分组，供工具说明分类组织与前端工具选择器使用。"""
-        groups: dict[str, list[Tool]] = {}
-        for t in self._tools.values():
-            groups.setdefault(getattr(t, "category", "exec"), []).append(t)
-        return groups
-
-    def lc_tools(self) -> list[dict]:
-        """工具集未变时返回缓存列表（Anthropic 格式 dict），避免每次 agent 调用重建。
-
-        返回全部工具（含 dynamic），供白名单显式取用及需要全量绑定的旧路径兼容。
-        """
-        if self._lc_tools_cache is None:
-            self._lc_tools_cache = [t.to_langchain() for t in self._tools.values()]
-        return self._lc_tools_cache
 
     def lc_tools_static(self) -> list[dict]:
         """只返回 disclosure=="static" 的工具（Anthropic 格式 dict），常驻绑定给模型。
 
         dynamic 工具（声明式 CLI / MCP）不在其中，需经 tool_search 披露后再由
-        get() 按名取回绑定。与 lc_tools() 同款按工具集缓存。
+        get() 按名取回绑定，并按工具集缓存。
         """
         if self._lc_tools_static_cache is None:
             self._lc_tools_static_cache = [
@@ -122,7 +91,7 @@ class ToolRegistry:
         """按名解析为 langchain dict 列表；跳过未注册的名（如已热卸载的 MCP 工具）。
 
         tool_search 披露后 agent 节点用它取回已解锁工具的绑定定义；不缓存
-        （disclosed 集因会话而异且不断变化，缓存收益低）。别名经 list() 解析。
+        （disclosed 集因会话而异且不断变化，缓存收益低）。
         """
         return [t.to_langchain() for t in self.list(names)]
 
@@ -192,11 +161,3 @@ def load_builtin_tools() -> None:
     from harness.tools.builtin.security import report as sec_report  # noqa: F401
     from harness.tools.builtin.web import fetch as web_fetch  # noqa: F401
     from harness.tools.builtin.web import search as web_search  # noqa: F401
-    # 注：控制面工具 stop_tool/get_tool_status/stop_agent/get_agent_status 已彻底移除
-    # 出代码库（ADR-0003 P4/T4.1，已完成）。原 builtin/hook/runtime.py、
-    # builtin/orchestration/agent_control.py 已删除。
-    # 改名别名（ADR-0003 P4/T4.3）：旧名 → 规范名，保持存量 agent.tools/skill.allowed_tools 可解析。
-    registry.alias("run_agent", "Agent")
-    registry.alias("load_skill", "Skill")
-    registry.alias("get_knowledge", "knowledge")
-    registry.alias("search_knowledge", "knowledge")

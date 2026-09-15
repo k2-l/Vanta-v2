@@ -1,4 +1,4 @@
-"""load_skill / load_agent 工具 — L2 层按需加载。
+"""Skill / load_agent 工具 — L2 层按需加载。
 
 L2 加载内容：
   - SOP（标准操作流程）：skill 的完整正文

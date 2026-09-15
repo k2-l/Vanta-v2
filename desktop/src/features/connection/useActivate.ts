@@ -9,30 +9,46 @@ import { useUi } from "@/stores/ui";
 import { DEFAULT_CAPABILITIES } from "@/contracts/connection";
 import { toClientError } from "@/contracts/errors";
 
+export function queryBelongsToConnection(queryKey: readonly unknown[], connectionId: string): boolean {
+  return queryKey.some((part) => part === connectionId);
+}
+
 export function useActivateConnection() {
-  const store = useConnection();
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (id: string) => {
-      // 连接隔离（规范 §4.6 / G4）：切到不同连接前，清空跨连接不可沿用的对象选择，
-      // 并移除上一连接的缓存查询与在途订阅，避免旧数据/选择泄漏到新连接。
-      if (store.activeConnectionId && store.activeConnectionId !== id) {
-        useUi.getState().resetSelections();
-        queryClient.removeQueries();
+      const store = useConnection.getState();
+      const previousId = store.activeConnectionId;
+      if (previousId) {
+        const predicate = (query: { queryKey: readonly unknown[] }) =>
+          queryBelongsToConnection(query.queryKey, previousId);
+        await queryClient.cancelQueries({ predicate });
+        queryClient.removeQueries({ predicate });
       }
-      store.setActive(id);
-      store.setStatus("testing");
+      if (previousId !== id) {
+        useUi.getState().resetSelections();
+      }
+      // 激活开始即清掉旧认证和能力，避免真实后端握手期间短暂发出带旧权限的请求。
+      useConnection.getState().beginActivation(id);
       const session = await ipc("connection_activate", { id });
       return session;
     },
-    onSuccess: (session) => {
+    onSuccess: (session, requestedId) => {
+      const store = useConnection.getState();
+      // 用户快速连续切换时，迟到的旧连接结果不得覆盖当前连接状态。
+      if (store.activeConnectionId !== requestedId) return;
       store.setStatus(session.status);
       store.setAuth(session.auth);
       store.setCapabilities(session.health.capabilities ?? DEFAULT_CAPABILITIES);
       store.setServerVersion(session.health.serverVersion);
       store.setError(undefined);
+      void queryClient.invalidateQueries({
+        predicate: (query) => queryBelongsToConnection(query.queryKey, requestedId),
+      });
     },
-    onError: (err) => {
+    onError: (err, requestedId) => {
+      const store = useConnection.getState();
+      if (store.activeConnectionId !== requestedId) return;
       const e = toClientError(err);
       store.setStatus(e.kind === "offline" ? "offline" : "degraded");
       store.setError(e.message);
@@ -41,17 +57,20 @@ export function useActivateConnection() {
 }
 
 export function useLogin() {
-  const store = useConnection();
   return useMutation({
     mutationFn: async (args: { connectionId: string; password: string }) => {
-      store.setStatus("authenticating");
+      useConnection.getState().setStatus("authenticating");
       return ipc("auth_login", args);
     },
-    onSuccess: (auth) => {
+    onSuccess: (auth, args) => {
+      const store = useConnection.getState();
+      if (store.activeConnectionId !== args.connectionId) return;
       store.setAuth(auth);
       store.setStatus(auth.authenticated ? "online" : "unauthenticated");
     },
-    onError: (err) => {
+    onError: (err, args) => {
+      const store = useConnection.getState();
+      if (store.activeConnectionId !== args.connectionId) return;
       const e = toClientError(err);
       store.setStatus(e.kind === "unauthorized" ? "unauthenticated" : "degraded");
       store.setError(e.message);
@@ -60,10 +79,17 @@ export function useLogin() {
 }
 
 export function useLogout() {
-  const store = useConnection();
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (connectionId: string) => ipc("auth_logout", { connectionId }),
-    onSuccess: () => {
+    onSuccess: async (_, connectionId) => {
+      const store = useConnection.getState();
+      if (store.activeConnectionId !== connectionId) return;
+      const predicate = (query: { queryKey: readonly unknown[] }) =>
+        queryBelongsToConnection(query.queryKey, connectionId);
+      await queryClient.cancelQueries({ predicate });
+      queryClient.removeQueries({ predicate });
+      useUi.getState().resetSelections();
       store.setAuth({ authenticated: false });
       store.setStatus("unauthenticated");
     },

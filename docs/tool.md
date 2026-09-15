@@ -65,7 +65,7 @@ class WhoisTool(Tool):
 1. `@register` 装饰器实例化并注册进全局 `registry`（import 时生效）。
 2. 把模块加进 `harness/tools/registry.py::load_builtin_tools()` 的 import 列表（触发装饰器）。
 3. 放在 `harness/tools/builtin/<category>/<name>.py`（cmd / web / security / orchestration…）。
-4. 改名兼容：`registry.alias("旧名", "规范名")` 让存量 `agent.tools` / `skill.allowed-tools` 里的旧名仍解析。
+4. 工具名是稳定协议，重命名时同步迁移 Agent/Skill 配置；后端不保留隐式旧名别名。
 
 ## 执行时会经过什么（`tool_node`）
 

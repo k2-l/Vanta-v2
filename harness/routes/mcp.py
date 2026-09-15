@@ -9,7 +9,7 @@ mcp_servers 列表作为一个键整体 save（不直接写 data/config.toml，�
 是为 agent 工具调用流设计的同步阻塞原语，强绑定 session_id + 一个活跃的 WS 连接来转发
 approval_required 事件 + 等待前端 resolve，REST 管理端点没有这个会话上下文，硬接会很别扭。
 改用更轻量的显式确认：请求体须带 `confirm: true`，否则 422；前端二次确认弹窗展示将执行
-的 command 全文后才把 confirm 置真（见 web/src/features/mcp/McpPage.tsx）。
+    的 command 全文后才把 confirm 置真；桌面端接入写侧时必须沿用此契约。
 
 env 脱敏：GET 一律不回明文 env，只回 env 的 key 名（env_keys），值本身只在内存/子进程
 环境变量中存在。
@@ -17,7 +17,7 @@ env 脱敏：GET 一律不回明文 env，只回 env 的 key 名（env_keys）�
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -26,7 +26,12 @@ from harness.app.auth import require_auth
 from harness.infra import config_store
 from harness.infra.logging import log
 from harness.infra.settings import get_settings
-from harness.tools.mcp import manager
+from harness.tools.mcp import (
+    mount_mcp_server,
+    snapshot_mcp_servers,
+    test_mcp_server,
+    unmount_mcp_server,
+)
 from harness.tools.registry import registry
 
 router = APIRouter(prefix="/v1/mcp", tags=["mcp"])
@@ -74,7 +79,7 @@ def _persisted_specs() -> list[dict[str, Any]]:
 def _to_view(spec: dict[str, Any], *, with_tools: bool = False) -> MCPServerView:
     """以持久配置为骨架，叠加 manager 运行时状态，组合成一项合并视图。"""
     name = spec.get("name", "")
-    runtime = manager.snapshot().get(name)
+    runtime = snapshot_mcp_servers().get(name)
     tool_names: list[str] = runtime.get("tools", []) if runtime else []
 
     if runtime is None:
@@ -123,13 +128,16 @@ def _check_name_collision(server_name: str) -> None:
 # ─── 路由 ────────────────────────────────────────────────────────────
 
 @router.get("/servers")
-async def list_servers(_: dict = Depends(require_auth)) -> list[MCPServerView]:
+async def list_servers(_: Annotated[dict, Depends(require_auth)]) -> list[MCPServerView]:
     """以持久配置为骨架、叠加运行时状态，返回合并视图列表。"""
     return [_to_view(s) for s in _persisted_specs()]
 
 
 @router.get("/servers/{name}")
-async def get_server(name: str, _: dict = Depends(require_auth)) -> MCPServerView:
+async def get_server(
+    name: str,
+    _: Annotated[dict, Depends(require_auth)],
+) -> MCPServerView:
     spec = next((s for s in _persisted_specs() if s.get("name") == name), None)
     if spec is None:
         raise HTTPException(404, f"MCP server 不存在：{name}")
@@ -137,7 +145,10 @@ async def get_server(name: str, _: dict = Depends(require_auth)) -> MCPServerVie
 
 
 @router.post("/servers", status_code=201)
-async def create_server(req: MCPServerSpec, _: dict = Depends(require_auth)) -> MCPServerView:
+async def create_server(
+    req: MCPServerSpec,
+    _: Annotated[dict, Depends(require_auth)],
+) -> MCPServerView:
     """新增 MCP server：校验 → 持久化 → 热挂载，返回合并视图。"""
     _require_confirm(req.confirm)
 
@@ -164,7 +175,7 @@ async def create_server(req: MCPServerSpec, _: dict = Depends(require_auth)) -> 
     log.info("mcp.server_created", server=name)
 
     if req.enabled:
-        await manager.mount(spec)
+        await mount_mcp_server(spec)
     return _to_view(spec, with_tools=True)
 
 
@@ -174,7 +185,9 @@ class DeleteConfirm(BaseModel):
 
 @router.delete("/servers/{name}", status_code=200)
 async def delete_server(
-    name: str, body: DeleteConfirm, _: dict = Depends(require_auth)
+    name: str,
+    body: DeleteConfirm,
+    _: Annotated[dict, Depends(require_auth)],
 ) -> dict[str, Any]:
     """删除 MCP server：热卸载（drain 延迟关子进程）+ 从持久配置移除。"""
     _require_confirm(body.confirm)
@@ -184,16 +197,19 @@ async def delete_server(
     if len(remaining) == len(specs):
         raise HTTPException(404, f"MCP server 不存在：{name}")
 
-    removed_tools = await manager.unmount(name, drain=True)
+    removed_tools = await unmount_mcp_server(name, drain=True)
     _save_servers(remaining)
     log.info("mcp.server_deleted", server=name, removed_tools=len(removed_tools))
     return {"status": "ok", "name": name, "removed_tools": removed_tools}
 
 
 @router.post("/servers/{name}/test")
-async def test_server(name: str, _: dict = Depends(require_auth)) -> dict[str, Any]:
+async def test_server(
+    name: str,
+    _: Annotated[dict, Depends(require_auth)],
+) -> dict[str, Any]:
     """测试连接：用持久配置中的 spec 临时拉起一次，不入册不写库。"""
     spec = next((s for s in _persisted_specs() if s.get("name") == name), None)
     if spec is None:
         raise HTTPException(404, f"MCP server 不存在：{name}")
-    return await manager.test(spec)
+    return await test_mcp_server(spec)

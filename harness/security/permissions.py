@@ -32,7 +32,7 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset({
 _EDIT_TOOLS: frozenset[str] = frozenset({"Write", "Edit"})
 
 # 走命令解析的执行类工具
-_BASH_TOOLS: frozenset[str] = frozenset({"Bash", "Sudo_Bash"})
+_BASH_TOOLS: frozenset[str] = frozenset({"Bash"})
 
 # 复合命令分隔符：&& || | ; 及换行
 _SPLIT_RE = re.compile(r"\s*(?:&&|\|\||[|;\n])\s*")

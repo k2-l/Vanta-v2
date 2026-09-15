@@ -115,6 +115,8 @@ def container_to_dict(r: Any, *, managed: bool = True, status: str | None = None
 
 def artifact_to_dict(r: Any) -> dict:
     """看板 artifact → 前端形状。secret 类不回明文正文（只留 vault_ref，见 BLACKBOARD P3）。"""
+    content = "" if r.sensitivity == "secret" else r.evidence
+    source_session_id = getattr(r, "source_session_id", "") or ""
     return {
         "id":            r.id,
         "engagement_id": r.engagement_id,
@@ -122,12 +124,18 @@ def artifact_to_dict(r: Any) -> dict:
         "kind":          r.kind,
         "sensitivity":   r.sensitivity,
         "title":         r.title,
-        "content":       "" if r.sensitivity == "secret" else r.evidence,   # 甲：evidence 即正文
+        "content":       content,   # 甲：evidence 即正文
+        "size_bytes":    len((r.evidence or "").encode("utf-8")),
+        "media_type":    getattr(r, "media_type", "text/plain") or "text/plain",
+        "source_session_id": source_session_id,
+        # 当前 run≈session；显式双字段避免前端继续猜 producer 的语义。
+        "source_run_id": source_session_id,
         "tags":          json.loads(r.tags) if r.tags else [],
         "vault_ref":     r.vault_ref,
         "severity":      r.severity,     # 仅 kind=finding 有意义
         "status":        r.status,
         "created_at":    r.created_at.isoformat() if r.created_at else None,
+        "updated_at":    r.updated_at.isoformat() if r.updated_at else None,
     }
 
 

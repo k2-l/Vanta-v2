@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -39,7 +40,7 @@ class ExecContainerRequest(BaseModel):
 
 
 @router.get("/containers")
-async def list_containers(_: dict = Depends(require_auth)) -> list[dict]:
+async def list_containers(_: Annotated[dict, Depends(require_auth)]) -> list[dict]:
     """live podman 容器 ∪ store 元数据合并；daemon 不可达则退回 store-only（全 managed）。"""
     async with session_factory()() as db:
         rows = (await db.execute(select(ContainerRecord))).scalars().all()
@@ -66,14 +67,17 @@ async def list_containers(_: dict = Depends(require_auth)) -> list[dict]:
 
 
 @router.get("/containers/{cid}")
-async def get_container(cid: str, _: dict = Depends(require_auth)) -> dict:
+async def get_container(cid: str, _: Annotated[dict, Depends(require_auth)]) -> dict:
     async with session_factory()() as db:
         rec = await get_or_404(db, ContainerRecord, cid, "容器不存在")
         return container_to_dict(rec)
 
 
 @router.post("/containers", status_code=201)
-async def create_container(req: CreateContainerRequest, _: dict = Depends(require_auth)) -> dict:
+async def create_container(
+    req: CreateContainerRequest,
+    _: Annotated[dict, Depends(require_auth)],
+) -> dict:
     """建实体 podman 容器 ＋ 库记录。库写失败则回滚删掉刚建的容器（对齐 nexus）。"""
     try:
         podman_id = await podman.create_container(req.name, req.image, req.ports, req.env_vars)
@@ -96,7 +100,7 @@ async def create_container(req: CreateContainerRequest, _: dict = Depends(requir
 
 
 @router.patch("/containers/{cid}/start")
-async def start_container(cid: str, _: dict = Depends(require_auth)) -> dict:
+async def start_container(cid: str, _: Annotated[dict, Depends(require_auth)]) -> dict:
     async with session_factory()() as db:
         rec = await get_or_404(db, ContainerRecord, cid, "容器不存在")
         if rec.container_id:
@@ -110,7 +114,7 @@ async def start_container(cid: str, _: dict = Depends(require_auth)) -> dict:
 
 
 @router.patch("/containers/{cid}/stop")
-async def stop_container(cid: str, _: dict = Depends(require_auth)) -> dict:
+async def stop_container(cid: str, _: Annotated[dict, Depends(require_auth)]) -> dict:
     async with session_factory()() as db:
         rec = await get_or_404(db, ContainerRecord, cid, "容器不存在")
         if rec.container_id:
@@ -124,7 +128,7 @@ async def stop_container(cid: str, _: dict = Depends(require_auth)) -> dict:
 
 
 @router.delete("/containers/{cid}", status_code=204)
-async def delete_container(cid: str, _: dict = Depends(require_auth)) -> None:
+async def delete_container(cid: str, _: Annotated[dict, Depends(require_auth)]) -> None:
     async with session_factory()() as db:
         rec = await get_or_404(db, ContainerRecord, cid, "容器不存在")
         if rec.container_id:
@@ -135,7 +139,9 @@ async def delete_container(cid: str, _: dict = Depends(require_auth)) -> None:
 
 @router.post("/containers/{cid}/exec")
 async def exec_container(
-    cid: str, req: ExecContainerRequest, _: dict = Depends(require_auth)
+    cid: str,
+    req: ExecContainerRequest,
+    _: Annotated[dict, Depends(require_auth)],
 ) -> dict:
     async with session_factory()() as db:
         rec = await get_or_404(db, ContainerRecord, cid, "容器不存在")

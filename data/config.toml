@@ -32,7 +32,6 @@ url = "postgresql+asyncpg://harness:harness_dev@localhost/harness"
 
 [paths]
 data_dir     = "data"
-chroma_dir   = "data/chroma"
 profile_path = "data/profile.md"
 suite_dir    = "/home/ec2-user/vanta/workspace"
 

@@ -4,7 +4,6 @@
 （harness/infra/permissions）在执行前按 allow/ask/deny 规则门控。本工具只负责"安全地把
 命令交给 shell 跑并包装结果"。host 上限定在 workspace 工作目录内执行。
 
-Sudo_Bash 已并入 Bash（破坏性/高权限命令由权限引擎的 ask/deny 处理），见文件末别名。
 """
 
 from __future__ import annotations
@@ -19,7 +18,7 @@ from harness.infra.settings import get_settings
 from harness.security.permissions import _HOST_DENIED_TOOLS, _first_program
 from harness.tools.base import Tool, ToolResult
 from harness.tools.exec_context import get_exec_env
-from harness.tools.registry import register, registry
+from harness.tools.registry import register
 
 DEFAULT_TIMEOUT = 30.0
 MAX_OUTPUT_BYTES = 32_768
@@ -184,7 +183,3 @@ class ShellExecTool(Tool):
             return await _exec_command(command, cwd, timeout)
         except Exception as exc:  # noqa: BLE001
             return ToolResult(ok=False, output="", error=f"{type(exc).__name__}: {exc}")
-
-
-# Sudo_Bash 已并入 Bash（ADR-0003 P3/T3.3）：保留别名让存量 agent.tools/skill 引用仍可解析。
-registry.alias("Sudo_Bash", "Bash")

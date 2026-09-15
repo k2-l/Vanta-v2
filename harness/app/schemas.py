@@ -25,7 +25,8 @@ class ServerCapabilities(BaseModel):
     event_replay: bool = False
     # 无服务端取消端点；对话流由客户端 stream_stop 中断。
     run_cancel: bool = False
-    artifact_export: bool = False
+    # 后端提供受控 artifact 详情；实际写盘仅由 Rust Core 完成。
+    artifact_export: bool = True
 
 
 class HealthResponse(BaseModel):

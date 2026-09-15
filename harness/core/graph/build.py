@@ -51,11 +51,6 @@ def build_graph() -> StateGraph:
 _default_compiled = build_graph().compile()
 _compiled = _default_compiled
 
-# 兼容旧引用：仍导出 compiled_graph（指向默认无 checkpointer 版）。
-# 运行时应走 get_graph()，以拿到 lifespan 里接了 durable checkpointer 的版本。
-compiled_graph = _default_compiled
-
-
 def set_checkpointer(checkpointer) -> None:
     """启动时（lifespan）用 durable checkpointer 重新编译主图 —— 崩溃续跑地基。
 

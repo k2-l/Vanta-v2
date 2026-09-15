@@ -1,24 +1,37 @@
 """客户端基础对话所依赖的后端降级与工作区回归。"""
 
+import asyncio
 import json
 import os
 import tempfile
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from harness.app.main import ensure_workspace
+from fastapi import HTTPException
+
+from harness.app.main import create_app, ensure_workspace
+from harness.app.schemas import HealthResponse
 from harness.core.capabilities.memory import automatic_memory_available, recall_as_context
 from harness.core.runtime import _persist_answer, _remember_best_effort
 from harness.infra.settings import get_settings
 from harness.providers import get_provider
-from harness.routes.chat import _record_runtime_event
+from harness.routes._utils import artifact_to_dict
+from harness.routes.chat import (
+    ApprovalDecision,
+    _record_runtime_event,
+    _retry_approval_audits,
+    submit_approval_decision,
+)
+from harness.security.approvals import list_pending, request_approval
 from harness.tools.builtin.cmd.file_ops import _sandbox_path
 from harness.tools.builtin.cmd.shell import _exec_command, _resolve_cwd
+from harness.tools.builtin.security.board import _media_type
 
 
-class OptionalMemoryTests(unittest.IsolatedAsyncioTestCase):
+class OptionalMemoryAvailabilityTests(unittest.TestCase):
     def test_unconfigured_qdrant_is_skipped_without_vector_request(self) -> None:
         settings = SimpleNamespace(qdrant_url="", qdrant_api_key="", embedding_api_key="key")
         self.assertFalse(automatic_memory_available(settings))
@@ -28,6 +41,45 @@ class OptionalMemoryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(recall_as_context("你好"), "")
             search.assert_not_called()
 
+
+class DesktopBackendContractTests(unittest.TestCase):
+    def test_health_declares_the_desktop_contract(self) -> None:
+        health = HealthResponse(status="ok", version="test")
+        self.assertEqual(health.api_version, "1")
+        self.assertTrue(health.capabilities.run_snapshot)
+        self.assertTrue(health.capabilities.run_history)
+        self.assertTrue(health.capabilities.artifact_export)
+
+    def test_every_desktop_operation_has_a_backend_route(self) -> None:
+        paths = create_app().openapi()["paths"]
+        required = {
+            "/health": "get",
+            "/auth/login": "post",
+            "/auth/me": "get",
+            "/chat": "post",
+            "/chat/approvals": "get",
+            "/chat/approvals/history": "get",
+            "/chat/approvals/{call_id}": "post",
+            "/sessions": "get",
+            "/runs": "get",
+            "/sessions/{session_id}/messages": "get",
+            "/sessions/{session_id}/phases": "get",
+            "/sessions/{session_id}/events": "get",
+            "/budget/{session_id}": "get",
+            "/v1/artifacts": "get",
+            "/v1/artifacts/{artifact_id}": "get",
+            "/v1/agents": "get",
+            "/v1/skills": "get",
+            "/v1/mcp/servers": "get",
+            "/v1/knowledge": "get",
+            "/v1/containers": "get",
+        }
+        for path, method in required.items():
+            self.assertIn(path, paths)
+            self.assertIn(method, paths[path])
+
+
+class OptionalMemoryPersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_auto_memory_failure_does_not_escape_chat_tail(self) -> None:
         with patch(
             "harness.core.runtime.asyncio.to_thread",
@@ -99,6 +151,183 @@ class RunHistoryTests(unittest.IsolatedAsyncioTestCase):
         publish.assert_awaited_once()
         upsert.assert_awaited_once_with("agent", "session-1", event_data := json.loads(event["data"]))
         self.assertEqual(event_data["status"], "running")
+
+
+class ApprovalHistoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_expired_approval_is_persisted_to_audit_history(self) -> None:
+        with patch(
+            "harness.security.approvals.event_bus.publish",
+            new=AsyncMock(),
+        ), patch(
+            "harness.security.approvals.db.save_approval_history",
+            new=AsyncMock(),
+        ), patch(
+            "harness.security.approvals.append_audit",
+            new=AsyncMock(return_value="f" * 64),
+        ) as append, patch(
+            "harness.security.approvals.db.mark_approval_audited",
+            new=AsyncMock(),
+        ) as mark:
+            allowed = await request_approval(
+                "session-1",
+                "shell",
+                "执行命令",
+                risk="high",
+                risk_source="derived",
+                target="./release.sh",
+                scope="本机",
+                impact="写入文件",
+                timeout=0.001,
+            )
+
+        self.assertFalse(allowed)
+        self.assertEqual(list_pending(), [])
+        append.assert_awaited_once()
+        self.assertEqual(append.await_args.args[0], "tool_approval")
+        self.assertEqual(append.await_args.kwargs["decision"], "expired")
+        detail = append.await_args.kwargs["detail"]
+        self.assertEqual(detail["tool_name"], "shell")
+        self.assertTrue(detail["decision_id"])
+        self.assertTrue(detail["requested_at"])
+        self.assertTrue(detail["expires_at"])
+        mark.assert_awaited_once()
+
+    async def test_failed_audit_is_compensated_from_persistent_history(self) -> None:
+        row = SimpleNamespace(
+            decision_id="decision-1",
+            call_id="call-1",
+            tool_name="shell",
+            session_id="session-1",
+            actor="human",
+            decision="approved",
+            risk="high",
+            risk_source="derived",
+            target="./release.sh",
+            scope="本机",
+            impact="写入文件",
+            message="执行发布脚本",
+            requested_at="2026-09-15T00:00:00+00:00",
+            expires_at="2026-09-15T00:05:00+00:00",
+        )
+        with patch(
+            "harness.routes.chat.db.list_unaudited_approvals",
+            new=AsyncMock(return_value=[row]),
+        ), patch(
+            "harness.routes.chat.query_audit",
+            new=AsyncMock(return_value=[]),
+        ), patch(
+            "harness.routes.chat.append_audit",
+            new=AsyncMock(return_value="a" * 64),
+        ) as append, patch(
+            "harness.routes.chat.db.mark_approval_audited",
+            new=AsyncMock(),
+        ) as mark:
+            await _retry_approval_audits()
+
+        append.assert_awaited_once()
+        self.assertEqual(append.await_args.kwargs["decision"], "approved")
+        mark.assert_awaited_once_with("decision-1", "a" * 64)
+
+    async def test_decision_does_not_release_tool_when_history_write_fails(self) -> None:
+        with patch(
+            "harness.security.approvals.event_bus.publish",
+            new=AsyncMock(),
+        ):
+            waiting = asyncio.create_task(
+                request_approval("session-safe", "shell", "执行命令", timeout=1.0)
+            )
+            await asyncio.sleep(0)
+            call_id = next(item["call_id"] for item in list_pending() if item["session_id"] == "session-safe")
+
+            with patch(
+                "harness.routes.chat.db.save_approval_history",
+                new=AsyncMock(side_effect=RuntimeError("db unavailable")),
+            ):
+                with self.assertRaises(HTTPException) as caught:
+                    await submit_approval_decision(
+                        call_id,
+                        ApprovalDecision(approved=True),
+                        {},
+                    )
+
+            self.assertEqual(caught.exception.status_code, 503)
+            self.assertTrue(any(item["call_id"] == call_id for item in list_pending()))
+            with patch(
+                "harness.routes.chat.db.save_approval_history",
+                new=AsyncMock(),
+            ), patch(
+                "harness.routes.chat.append_audit",
+                new=AsyncMock(return_value="a" * 64),
+            ), patch(
+                "harness.routes.chat.db.mark_approval_audited",
+                new=AsyncMock(),
+            ):
+                result = await submit_approval_decision(
+                    call_id,
+                    ApprovalDecision(approved=False),
+                    {},
+                )
+            self.assertTrue(result["ok"])
+            self.assertFalse(await waiting)
+
+
+class ArtifactContractTests(unittest.TestCase):
+    def test_artifact_metadata_has_explicit_source_size_and_update_time(self) -> None:
+        now = datetime.now(UTC)
+        row = SimpleNamespace(
+            id="artifact-1",
+            engagement_id="eng-1",
+            producer="legacy-producer",
+            source_session_id="session-1",
+            media_type="text/markdown",
+            kind="report",
+            sensitivity="internal",
+            title="报告",
+            evidence="你好",
+            tags='["g3"]',
+            vault_ref="",
+            severity="info",
+            status="open",
+            created_at=now,
+            updated_at=now,
+        )
+
+        payload = artifact_to_dict(row)
+
+        self.assertEqual(payload["size_bytes"], len("你好".encode()))
+        self.assertEqual(payload["source_session_id"], "session-1")
+        self.assertEqual(payload["source_run_id"], "session-1")
+        self.assertEqual(payload["media_type"], "text/markdown")
+        self.assertEqual(payload["updated_at"], now.isoformat())
+
+    def test_secret_artifact_never_exposes_content_but_keeps_size(self) -> None:
+        row = SimpleNamespace(
+            id="artifact-secret",
+            engagement_id="eng-1",
+            producer="session-1",
+            source_session_id="session-1",
+            media_type="text/plain",
+            kind="note",
+            sensitivity="secret",
+            title="密钥",
+            evidence="super-secret",
+            tags="[]",
+            vault_ref="secret://ref",
+            severity="critical",
+            status="open",
+            created_at=None,
+            updated_at=None,
+        )
+
+        payload = artifact_to_dict(row)
+
+        self.assertEqual(payload["content"], "")
+        self.assertEqual(payload["size_bytes"], len("super-secret"))
+
+    def test_media_type_is_derived_from_kind_and_content(self) -> None:
+        self.assertEqual(_media_type("report", "# Report"), "text/markdown")
+        self.assertEqual(_media_type("scan_result", '{"ok": true}'), "application/json")
+        self.assertEqual(_media_type("scan_result", "plain output"), "text/plain")
 
 
 class WorkspaceTests(unittest.TestCase):

@@ -20,6 +20,19 @@ _KINDS = ["finding", "scan_result", "recon", "report", "note"]
 _SENS = ["public", "internal", "secret"]
 
 
+def _media_type(kind: str, content: str) -> str:
+    """为桌面端受控预览/导出提供可信类型，不接受模型自报 MIME。"""
+    if kind in {"finding", "report", "note"}:
+        return "text/markdown"
+    if kind in {"scan_result", "recon"}:
+        try:
+            json.loads(content)
+        except (TypeError, ValueError):
+            return "text/plain"
+        return "application/json"
+    return "text/plain"
+
+
 @register
 class BoardTool(Tool):
     name = "board"
@@ -69,7 +82,11 @@ class BoardTool(Tool):
             sens = sensitivity if sensitivity in _SENS else "internal"
             rec = await db.create_artifact(
                 engagement_id=eid, kind=kind, title=title, content=content,
-                producer=env.session_id or "", sensitivity=sens, tags=list(tags or []),
+                producer=env.session_id or "",
+                source_session_id=env.session_id or "",
+                media_type=_media_type(kind, content),
+                sensitivity=sens,
+                tags=list(tags or []),
             )
             scope = f"（归属 engagement {eid}）" if eid else "（无活跃 engagement，未归属）"
             return ToolResult(ok=True, output=f"已上看板 {rec.id} [{kind}/{sens}] {title}{scope}")

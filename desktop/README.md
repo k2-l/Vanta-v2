@@ -1,6 +1,6 @@
 # Vanta Desktop（Tauri 瘦客户端）
 
-Vanta 的 Tauri 2 桌面瘦客户端。当前进度：**G2 事件归一化 + 真实 Runs / 对话详情**。
+Vanta 的 Tauri 2 桌面瘦客户端。当前进度：**G3 审批与产物闭环已完成，正在进入真实后端联调**。
 
 设计与施工基线：
 
@@ -135,20 +135,35 @@ npm run tauri:build   # 打包
 - 审批（HITL）：后端补 `GET /chat/approvals` 暴露进程内待处理队列（call_id / tool_name /
   message / session_id / requested_at / expires_at）；桌面轮询该队列，决策走既有
   `POST /chat/approvals/{call_id}`，以 call_id 为幂等键防重复提交。
-- 审批页：待处理（服务端权威）+ 本次会话已批准/已拒绝记录；风险按工具名启发式分级并如实标注；
-  详情可追溯并跳转来源会话；导航轨未读角标改为实时待处理数量。
-- 产物：接入只读 `GET /v1/artifacts`（看板 artifact）；列表含来源/类型/敏感级/严重度；
-  受控预览（evidence 按 Markdown）；**secret 类只显示元数据、不回明文**（后端不下发正文）。
-- 导出能力门控：`artifact_export=False` 时导出入口禁用并说明原因，不显示可操作假入口。
-- 契约四层同步：Rust gateway（`approvals.decide` / `artifacts.list`）、TS ApiOperation、
-  `contracts/resources.ts`（Approval / Artifact 线型）、浏览器 mock。
+- 审批结果与超时项先写 `approval_history` 持久投影，再写哈希链审计账本；账本临时失败时
+  保留 outbox 状态，历史查询会按 `decision_id` 自动补账。持久化失败不唤醒待执行工具。
+- 审批页：待处理、已批准、已拒绝和持久化已过期记录；后端提供风险/来源/对象/范围/影响，
+  详情展示审计证据并跳转来源会话；多卡按 call_id 独立提交。
+- 产物：`GET /v1/artifacts` / `{id}` 返回真实 UTF-8 大小、更新时间、媒体类型及明确的
+  `source_session_id` / `source_run_id`；支持类型/来源筛选和 Chat ↔ Run ↔ Artifact 跳转。
+- 受控预览：Markdown、纯文本、JSON/代码及白名单 raster data URL；未知类型只显示元数据；
+  **secret 类只显示元数据、不回明文且禁止导出**。
+- 安全导出：后端声明 `artifact_export=True`；Rust Core 重新读取权威产物，拒绝 secret，
+  清洗文件名并以不可覆盖的唯一名称写入系统下载目录 `Vanta Exports`，WebView 不能传路径或正文。
+- 契约四层同步：Python schema/route、Rust gateway/command、TS contract/UI、浏览器 mock。
+
+## 联调前收口（模块生命周期与后端清理）
+
+- 六个 GUI 模块统一通过单一导航入口切换；模块首次访问后保持挂载，返回时保留草稿、筛选、
+  最近选择和滚动位置，对话流不会因为查看 Runs、审批或产物而中断。
+- 切换服务器连接时才整体销毁模块工作区，并取消旧连接查询、清理资源选择；快速切换时，迟到的
+  激活或登录结果不会覆盖当前连接。
+- Rust 激活连接时严格校验后端 API v1，并调用 `/auth/me` 验证钥匙串令牌；401 会清理失效令牌，
+  其它握手失败不会伪装成已连接。
+- 已移除后端旧工具别名、旧审批捷径、废弃上下文配置、未使用图导出、MCP 兼容门面及知识库双写；
+  清理范围和联调门槛见 [后端清理审计](../docs/backend-cleanup-audit.md)。
 
 ## 下一步
 
-- G4：能力与设置真实接入（Agent/Skill/MCP/Knowledge/执行环境目录、连接诊断）。
-- 审批/产物富化：审批请求携带显式风险/范围/影响；artifact 导出走 Rust Core 安全路径选择。
-- run_subscribe / approvals 升级为 WS 实时（`/ws/chat/{id}`）替代轮询。
-- 补 ESLint 配置与前端交互测试。
+- 重启真实后端完成 `approval_history` 与 artifact 新字段迁移，并做审批、补偿和导出真机联调。
+- 为升级前旧 artifact 回填来源；二进制图片/附件需要独立存储契约后再接入，不把任意字节塞进 WebView。
+- run_subscribe / approvals 可在后续升级为 WS 实时（`/ws/chat/{id}`）替代轮询。
+- 补 ESLint、组件/Tauri E2E 与平台安装包验收。
 
 ## 当前 HTTP 联调
 

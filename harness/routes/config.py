@@ -22,7 +22,7 @@ EDITABLE: set[str] = {
     "model_high", "model_mid", "model_low",
     "default_provider", "model_high_provider", "model_mid_provider", "model_low_provider",
     # 功能开关
-    "context_compression_enabled", "enable_prompt_cache",
+    "enable_prompt_cache",
     # 上下文压缩
     "model_context_window", "context_compression_ratio",
     "context_summary_threshold", "context_summary_target_chars",

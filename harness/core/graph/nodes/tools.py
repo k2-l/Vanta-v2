@@ -60,8 +60,8 @@ async def _execute_tool_call(
     call_id = tc.get("id", "")
     local_logs: list[str] = [f"→ {tool_name}({str(tool_input)[:120]})"]
 
-    # Agent(旧名 run_agent) context 压缩（策略外壳，保留）
-    if tool_name in ("Agent", "run_agent"):
+    # Agent context 压缩（策略外壳，保留）
+    if tool_name == "Agent":
         _ctx = (
             tool_input.get("context")
             if isinstance(tool_input, dict)

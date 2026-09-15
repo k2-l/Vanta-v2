@@ -2,12 +2,12 @@
 
 requires_approval=True 的工具在 execute_tool_core 执行前调用 request_approval()：
   1. 通过 event_bus 推送 approval_required 事件（WS /ws/chat/{session_id} 转发给前端）
-  2. 创建一个 asyncio.Future，await 等待前端通过 REST 决策端点
-     POST /chat/approvals/{call_id} 调用 resolve_approval() 写入结果
+  2. 创建一个 asyncio.Future，await 等待前端通过 REST 决策端点；决策端先认领请求、
+     持久化审批历史，再唤醒 Future
   3. 超时或异常均 fail-closed（视为拒绝）
 
-纯内存实现，与 event_bus 同等可靠性模型：不持久化，进程重启会丢弃所有挂起的
-审批请求（对应工具调用按"拒绝"处理）。
+挂起队列与 Future 仍是进程内状态，进程重启会按 fail-closed 中止等待中的工具；
+已决策/已过期结果持久化到 approval_history，并以哈希链作为审计证据。
 """
 
 from __future__ import annotations
@@ -16,14 +16,17 @@ import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 
+from harness.infra import db
 from harness.infra.event_bus import event_bus
 from harness.infra.logging import log
+from harness.security.audit_ledger import append_audit
 
 DEFAULT_APPROVAL_TIMEOUT = 300.0  # 秒，与 actionable-improvements.md 原方案一致
 
 _pending: dict[str, asyncio.Future[bool]] = {}
 # 与 _pending 平行的元数据，供 GET /chat/approvals 列出待处理队列（桌面/Web HITL UI）。
 _pending_meta: dict[str, dict] = {}
+_claimed: set[str] = set()
 
 
 def list_pending() -> list[dict]:
@@ -114,7 +117,7 @@ async def request_approval(
     """请求人工审批并阻塞等待决策。
 
     通过 event_bus 发布 approval_required 事件（call_id/tool_name/message），
-    然后 await 一个 Future，直到 resolve_approval(call_id, ...) 被调用或超时。
+    然后 await 一个 Future，直到持久决策端点完成该审批或超时。
 
     返回 True = 批准；False = 拒绝/超时/异常（fail-closed）。
     """
@@ -153,9 +156,72 @@ async def request_approval(
             },
         )
         log.info("approval.requested", call_id=call_id, tool_name=tool_name, session_id=session_id)
-        return await asyncio.wait_for(fut, timeout=timeout)
+        # shield 防止 wait_for 超时直接取消 Future；若 REST 已认领该请求，给持久化一次短暂宽限。
+        return await asyncio.wait_for(asyncio.shield(fut), timeout=timeout)
     except TimeoutError:
+        if call_id in _claimed:
+            try:
+                return await asyncio.wait_for(asyncio.shield(fut), timeout=5.0)
+            except TimeoutError:
+                pass
         log.warning("approval.timeout", call_id=call_id, tool_name=tool_name, session_id=session_id)
+        # 超时项不能随内存队列清理而消失：写入同一哈希链，供审批历史长期追溯。
+        # 审计层维持 fail-open；工具执行仍在本函数中 fail-closed。
+        decision_id = uuid.uuid4().hex
+        meta = _pending_meta[call_id]
+        history_saved = False
+        try:
+            await db.save_approval_history(
+                decision_id=decision_id,
+                call_id=call_id,
+                tool_name=tool_name,
+                session_id=session_id,
+                actor="system",
+                decision="expired",
+                risk=risk,
+                risk_source=risk_source,
+                target=target,
+                scope=scope,
+                impact=impact,
+                message=message,
+                requested_at=meta["requested_at"],
+                expires_at=meta["expires_at"],
+            )
+            history_saved = True
+        except Exception as exc:  # noqa: BLE001 — 审批仍须 fail-closed
+            log.warning("approval.expiry_history_failed", call_id=call_id, exc=str(exc)[:200])
+        entry_hash = await append_audit(
+            "tool_approval",
+            session_id=session_id,
+            actor="system",
+            target=target,
+            command=message,
+            decision="expired",
+            detail={
+                "decision_id": decision_id,
+                "call_id": call_id,
+                "tool_name": tool_name,
+                "risk": risk,
+                "risk_source": risk_source,
+                "scope": scope,
+                "impact": impact,
+                "requested_at": meta["requested_at"],
+                "expires_at": meta["expires_at"],
+                "audit_recorded": True,
+            },
+        )
+        if history_saved and entry_hash:
+            try:
+                await db.mark_approval_audited(decision_id, entry_hash)
+            except Exception as exc:  # noqa: BLE001 — 下次历史查询会按 decision_id 补偿
+                log.warning("approval.expiry_mark_failed", call_id=call_id, exc=str(exc)[:200])
+        if not entry_hash:
+            log.warning(
+                "approval.expiry_audit_failed",
+                call_id=call_id,
+                tool_name=tool_name,
+                session_id=session_id,
+            )
         return False
     except Exception as exc:  # noqa: BLE001 — fail-closed：任何异常都视为拒绝
         log.warning("approval.error", call_id=call_id, tool_name=tool_name, error=str(exc)[:200])
@@ -163,20 +229,31 @@ async def request_approval(
     finally:
         _pending.pop(call_id, None)
         _pending_meta.pop(call_id, None)
+        _claimed.discard(call_id)
 
 
-def resolve_approval(call_id: str, approved: bool) -> dict | None:
-    """REST 决策端点调用：resolve 对应的 Future，并回传该请求的元数据快照。
-
-    返回 None 表示 call_id 不存在或已被处理（前端应提示"该审批请求已失效"）。
-    返回 dict 时包含请求元数据 + `decision`（approved/rejected），供路由写入审计账本。
-    元数据在此处拷贝：set_result 会唤醒 request_approval 并在其 finally 弹出 _pending_meta，
-    先拷贝可避免竞态。
-    """
+def claim_approval(call_id: str, approved: bool) -> dict | None:
+    """原子认领一个挂起请求，但暂不唤醒工具；供路由先持久化决策。"""
     fut = _pending.get(call_id)
-    if fut is None or fut.done():
+    if fut is None or fut.done() or call_id in _claimed:
         return None
+    _claimed.add(call_id)
     meta = dict(_pending_meta.get(call_id, {}))
-    fut.set_result(approved)
     meta["decision"] = "approved" if approved else "rejected"
     return meta
+
+
+def complete_approval(call_id: str, approved: bool) -> bool:
+    """持久化成功后唤醒等待中的工具。"""
+    fut = _pending.get(call_id)
+    if call_id not in _claimed or fut is None or fut.done():
+        _claimed.discard(call_id)
+        return False
+    fut.set_result(approved)
+    _claimed.discard(call_id)
+    return True
+
+
+def release_approval_claim(call_id: str) -> None:
+    """持久化失败时释放认领，允许用户重试；工具继续等待并保持 fail-closed。"""
+    _claimed.discard(call_id)

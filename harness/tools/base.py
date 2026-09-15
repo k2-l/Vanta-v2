@@ -22,7 +22,7 @@ class ToolResult(BaseModel):
     artifacts: list[dict[str, Any]] = []
 
     @classmethod
-    def fail(cls, error: str, error_code: str = "UNKNOWN", **kw: Any) -> "ToolResult":
+    def fail(cls, error: str, error_code: str = "UNKNOWN", **kw: Any) -> ToolResult:
         """快捷构造失败结果。"""
         return cls(ok=False, output="", error=error, error_code=error_code, **kw)
 

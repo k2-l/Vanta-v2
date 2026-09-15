@@ -43,6 +43,7 @@ from harness.routes.agents import (
     update_agent,
 )
 from harness.tools.builtin.orchestration.run_agent import RunAgentTool
+from harness.tools.registry import ToolRegistry
 
 
 class InternalSectionTests(unittest.TestCase):
@@ -65,6 +66,17 @@ class InternalSectionTests(unittest.TestCase):
             "goal>目标</subgoal>完成",
         ]
         self.assertEqual("".join(stream_filter.feed(chunk) for chunk in chunks), "公开结论完成")
+
+
+class ToolRegistryContractTests(unittest.TestCase):
+    def test_removed_legacy_tool_names_do_not_resolve(self) -> None:
+        registry = ToolRegistry()
+        registry.register(SimpleNamespace(name="Agent"))
+        self.assertIn("Agent", registry)
+        for legacy_name in ("run_agent", "load_skill", "Sudo_Bash"):
+            self.assertNotIn(legacy_name, registry)
+            with self.assertRaises(KeyError):
+                registry.get(legacy_name)
 
 
 class DelegationGuardTests(unittest.IsolatedAsyncioTestCase):

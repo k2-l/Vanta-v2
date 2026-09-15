@@ -13,9 +13,9 @@
 握手、tools/list，并以 `mcp__<server>__<tool>` 注册进全局 registry；关闭时 shutdown_mcp()。
 单个 server 失败只记 warning，不影响其余 server 与主服务启动。
 
-热加载（P0/P1，见 harness/routes/mcp.py）：模块级 `manager`（MCPManager）支持运行时
-mount/unmount 单个 server，无需重启进程。工具集变化后 registry 的 tools_hash() 自动变化，
-agent 绑定模型的 cache key 随之失效，下一轮对话自动看见/看不见新增/删除的 MCP 工具。
+热加载（见 harness/routes/mcp.py）直接调用本模块的 server 生命周期函数；底层统一委托
+ToolSourceCoordinator。工具集变化后 registry 的 tools_hash() 自动变化，下一轮对话自动
+看见/看不见新增/删除的 MCP 工具。
 """
 
 from __future__ import annotations
@@ -245,53 +245,46 @@ class MCPSource(ToolSource):
         return SourceHealth(ok=True)
 
 
-class _MCPManagerFacade:
-    """兼容门面：保留 routes/mcp.py 依赖的 mount/unmount/snapshot/test 旧签名，
-    内部委托给统一的 ToolSourceCoordinator。server name ↔ source id(mcp:<name>) 转换在此。
-    """
-
-    async def mount(self, spec: dict[str, Any]) -> dict[str, Any]:
-        return self._strip(await coordinator.mount(MCPSource(spec)))
-
-    async def unmount(self, name: str, *, drain: bool = True) -> list[str]:
-        return await coordinator.unmount(f"mcp:{name}", drain=drain)
-
-    def snapshot(self) -> dict[str, dict[str, Any]]:
-        # 协调器按 source id(mcp:<name>) 存；剥前缀回 server name，保持旧契约。
-        return {
-            sid[len("mcp:"):]: self._strip(st)
-            for sid, st in coordinator.snapshot(kind="mcp").items()
-        }
-
-    @staticmethod
-    def _strip(st: dict[str, Any]) -> dict[str, Any]:
-        """去掉协调器内部的 kind 键，只回 routes 期望的 {status,error,tools}。"""
-        return {
-            "status": st.get("status", "disconnected"),
-            "error": st.get("error"),
-            "tools": st.get("tools", []),
-        }
-
-    async def test(self, spec: dict[str, Any]) -> dict[str, Any]:
-        """临时拉起一个 MCP server 验证可连通性，用完即关，不进 registry/协调器状态。"""
-        name = spec.get("name") or "_test_"
-        command = spec.get("command", "")
-        if not command:
-            return {"ok": False, "error": "缺少 command", "tools": []}
-        client = MCPClient(name, command, spec.get("args") or [], spec.get("env") or {})
-        try:
-            await client.start()
-            tools = await client.list_tools()
-            return {"ok": True, "error": None, "tools": [t.get("name", "") for t in tools]}
-        except Exception as exc:  # noqa: BLE001
-            stderr = " | ".join(client._stderr_tail)  # noqa: SLF001
-            err = str(exc)[:200] + (f"；stderr: {stderr}" if stderr else "")
-            return {"ok": False, "error": err, "tools": []}
-        finally:
-            await client.close()
+def _public_source_state(state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": state.get("status", "disconnected"),
+        "error": state.get("error"),
+        "tools": state.get("tools", []),
+    }
 
 
-manager = _MCPManagerFacade()
+def snapshot_mcp_servers() -> dict[str, dict[str, Any]]:
+    return {
+        source_id.removeprefix("mcp:"): _public_source_state(state)
+        for source_id, state in coordinator.snapshot(kind="mcp").items()
+    }
+
+
+async def mount_mcp_server(spec: dict[str, Any]) -> dict[str, Any]:
+    return _public_source_state(await coordinator.mount(MCPSource(spec)))
+
+
+async def unmount_mcp_server(name: str, *, drain: bool = True) -> list[str]:
+    return await coordinator.unmount(f"mcp:{name}", drain=drain)
+
+
+async def test_mcp_server(spec: dict[str, Any]) -> dict[str, Any]:
+    """临时拉起一个 MCP server 验证可连通性，用完即关，不注册工具。"""
+    name = spec.get("name") or "_test_"
+    command = spec.get("command", "")
+    if not command:
+        return {"ok": False, "error": "缺少 command", "tools": []}
+    client = MCPClient(name, command, spec.get("args") or [], spec.get("env") or {})
+    try:
+        await client.start()
+        tools = await client.list_tools()
+        return {"ok": True, "error": None, "tools": [t.get("name", "") for t in tools]}
+    except Exception as exc:  # noqa: BLE001
+        stderr = " | ".join(client._stderr_tail)  # noqa: SLF001
+        err = str(exc)[:200] + (f"；stderr: {stderr}" if stderr else "")
+        return {"ok": False, "error": err, "tools": []}
+    finally:
+        await client.close()
 
 
 async def init_mcp_tools() -> None:
@@ -299,7 +292,7 @@ async def init_mcp_tools() -> None:
     for spec in get_settings().mcp_servers:
         if not isinstance(spec, dict) or not spec.get("enabled", True):
             continue
-        await manager.mount(spec)
+        await mount_mcp_server(spec)
 
 
 async def shutdown_mcp() -> None:

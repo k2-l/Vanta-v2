@@ -21,7 +21,7 @@ const MOCK_CAPS: ServerCapabilities = {
   runHistory: true,
   eventReplay: false,
   runCancel: false,
-  artifactExport: false,
+  artifactExport: true,
 };
 
 /** 能力目录 mock——形状对齐后端 /v1/{agents,skills,mcp/servers,knowledge,containers}。 */
@@ -139,6 +139,24 @@ const store: {
       decided_at: new Date(Date.now() - 18 * 60_000).toISOString(),
       entry_hash: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
     },
+    {
+      decision_id: "dec_mock_expired",
+      call_id: "apr_expired01",
+      tool_name: "shell",
+      session_id: "session-mock",
+      decision: "expired",
+      risk: "high",
+      risk_source: "derived",
+      target: "./release.sh",
+      scope: "本机 · 授权范围 eng-mock",
+      impact: "将对目标执行主动 / 写入类操作，需明确授权",
+      message: "执行发布脚本",
+      requested_at: new Date(Date.now() - 12 * 60_000).toISOString(),
+      expires_at: new Date(Date.now() - 7 * 60_000).toISOString(),
+      decided_at: new Date(Date.now() - 7 * 60_000).toISOString(),
+      audit_recorded: true,
+      entry_hash: "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3",
+    },
   ],
   artifacts: [
     {
@@ -154,6 +172,11 @@ const store: {
       severity: "high",
       status: "open",
       created_at: new Date(Date.now() - 5 * 60_000).toISOString(),
+      updated_at: new Date(Date.now() - 4 * 60_000).toISOString(),
+      source_session_id: "session-mock",
+      source_run_id: "session-mock",
+      media_type: "text/markdown",
+      size_bytes: 238,
     },
     {
       id: "art_note_1",
@@ -168,6 +191,11 @@ const store: {
       severity: "info",
       status: "open",
       created_at: new Date(Date.now() - 20 * 60_000).toISOString(),
+      updated_at: new Date(Date.now() - 20 * 60_000).toISOString(),
+      source_session_id: "session-mock",
+      source_run_id: "session-mock",
+      media_type: "text/plain",
+      size_bytes: 72,
     },
     {
       id: "art_secret_1",
@@ -182,6 +210,11 @@ const store: {
       severity: "critical",
       status: "open",
       created_at: new Date(Date.now() - 30 * 60_000).toISOString(),
+      updated_at: new Date(Date.now() - 30 * 60_000).toISOString(),
+      source_session_id: "session-mock",
+      source_run_id: "session-mock",
+      media_type: "text/plain",
+      size_bytes: 128,
     },
   ],
 };
@@ -354,7 +387,7 @@ export async function mockInvoke<C extends keyof IpcContract>(
 
     case "api_request": {
       const operation = a?.operation as
-        | { op?: string; sessionId?: string; afterSeq?: number; limit?: number; kind?: string; callId?: string; approved?: boolean }
+        | { op?: string; sessionId?: string; artifactId?: string; afterSeq?: number; limit?: number; kind?: string; callId?: string; approved?: boolean }
         | undefined;
       if (operation?.op === "sessions.list") return delay(store.sessions.slice()) as never;
       if (operation?.op === "runs.list") return delay(mockRunSummaries(operation.limit)) as never;
@@ -404,10 +437,14 @@ export async function mockInvoke<C extends keyof IpcContract>(
         return delay({ ok: true, decision_id: decisionId, decision, audit_recorded: true, entry_hash: entryHash }) as never;
       }
       if (operation?.op === "artifacts.list") {
-        const rows = operation.kind
+        let rows = operation.kind
           ? store.artifacts.filter((art) => art.kind === operation.kind)
           : store.artifacts;
+        if (operation.sessionId) rows = rows.filter((art) => art.source_session_id === operation.sessionId);
         return delay(rows.slice()) as never;
+      }
+      if (operation?.op === "artifacts.get") {
+        return delay(store.artifacts.find((art) => art.id === operation.artifactId) ?? null) as never;
       }
       if (operation?.op === "capabilities.agents") return delay(MOCK_CAPABILITIES.agents.slice()) as never;
       if (operation?.op === "capabilities.skills") return delay(MOCK_CAPABILITIES.skills.slice()) as never;
@@ -429,6 +466,14 @@ export async function mockInvoke<C extends keyof IpcContract>(
 
     case "diagnostics_export":
       return delay({ path: "(mock)/vanta-diagnostics.json", bytes: 512 }) as never;
+
+    case "artifact_export": {
+      const artifact = store.artifacts.find((item) => item.id === a?.artifactId);
+      if (!artifact || artifact.sensitivity === "secret" || !artifact.content) {
+        return Promise.reject({ kind: "forbidden", message: "该产物不可导出", retryable: false });
+      }
+      return delay({ path: `(mock)/Vanta Exports/${artifact.title}.md`, bytes: artifact.size_bytes ?? artifact.content.length }) as never;
+    }
 
     default:
       return Promise.reject({

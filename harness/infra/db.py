@@ -233,6 +233,34 @@ class AuditLedgerRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
 
 
+class ApprovalHistoryRecord(Base):
+    """审批结果/过期的持久投影，也是审计失败后的补偿 outbox。
+
+    决策先在此落库；audit_recorded=False 的记录由历史查询触发重试。哈希链仍是
+    审计证据权威，本表保证账本短暂故障时审批结果不会只停留在 WebView 内存。
+    """
+
+    __tablename__ = "approval_history"
+
+    decision_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    call_id: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    tool_name: Mapped[str] = mapped_column(String(200), default="")
+    session_id: Mapped[str] = mapped_column(String(32), default="", index=True)
+    actor: Mapped[str] = mapped_column(String(32), default="human")
+    decision: Mapped[str] = mapped_column(String(32), index=True)
+    risk: Mapped[str] = mapped_column(String(16), default="")
+    risk_source: Mapped[str] = mapped_column(String(16), default="")
+    target: Mapped[str] = mapped_column(Text, default="")
+    scope: Mapped[str] = mapped_column(Text, default="")
+    impact: Mapped[str] = mapped_column(Text, default="")
+    message: Mapped[str] = mapped_column(Text, default="")
+    requested_at: Mapped[str] = mapped_column(String(64), default="")
+    expires_at: Mapped[str] = mapped_column(String(64), default="")
+    audit_recorded: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    entry_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+
+
 class SecurityFinding(Base):
     """安全发现 —— 审计 / 扫描 / 渗透产出的结构化发现，归属 engagement，供报告。"""
 
@@ -253,6 +281,8 @@ class SecurityFinding(Base):
     )
     # ── 看板泛化（BLACKBOARD P1）：finding 是 artifact 的一个 kind；evidence 即通用正文 ──
     producer: Mapped[str] = mapped_column(String(200), default="")                       # 产出方 agent/session
+    source_session_id: Mapped[str] = mapped_column(String(32), default="", index=True)   # 来源会话（run≈session）
+    media_type: Mapped[str] = mapped_column(String(100), default="text/plain")           # 受控预览/导出类型
     kind: Mapped[str] = mapped_column(String(32), default="finding", index=True)         # finding|scan_result|recon|report|note|secret_ref
     sensitivity: Mapped[str] = mapped_column(String(16), default="internal", index=True) # public|internal|secret
     tags: Mapped[str] = mapped_column(Text, default="[]")                                # JSON list
@@ -302,12 +332,15 @@ async def init_db() -> None:
         "ALTER TABLE sessions ADD COLUMN compacted_upto TIMESTAMPTZ",
         # 看板泛化（BLACKBOARD P1）：给 security_findings 补 artifact 通用列
         "ALTER TABLE security_findings ADD COLUMN producer VARCHAR(200) DEFAULT ''",
+        "ALTER TABLE security_findings ADD COLUMN source_session_id VARCHAR(32) DEFAULT ''",
+        "ALTER TABLE security_findings ADD COLUMN media_type VARCHAR(100) DEFAULT 'text/plain'",
         "ALTER TABLE security_findings ADD COLUMN kind VARCHAR(32) DEFAULT 'finding'",
         "ALTER TABLE security_findings ADD COLUMN sensitivity VARCHAR(16) DEFAULT 'internal'",
         "ALTER TABLE security_findings ADD COLUMN tags TEXT DEFAULT '[]'",
         "ALTER TABLE security_findings ADD COLUMN vault_ref VARCHAR(200) DEFAULT ''",
         "ALTER TABLE security_findings ADD COLUMN share_with TEXT DEFAULT '[]'",
         "ALTER TABLE security_findings ADD COLUMN dedup_key VARCHAR(200) DEFAULT ''",
+        "CREATE INDEX IF NOT EXISTS ix_security_findings_source_session_id ON security_findings (source_session_id)",
     ]:
         try:
             async with _engine.begin() as conn:
@@ -869,6 +902,8 @@ async def create_artifact(
     title: str,
     content: str = "",
     producer: str = "",
+    source_session_id: str = "",
+    media_type: str = "text/plain",
     sensitivity: str = "internal",
     tags: list[str] | None = None,
     vault_ref: str = "",
@@ -885,6 +920,8 @@ async def create_artifact(
             title=title[:500],
             evidence=content,
             producer=producer[:200],
+            source_session_id=source_session_id[:32],
+            media_type=media_type[:100],
             sensitivity=sensitivity,
             tags=json.dumps(tags or []),
             vault_ref=vault_ref[:200],
@@ -898,7 +935,9 @@ async def create_artifact(
 
 
 async def list_artifacts(
-    engagement_id: str | None = None, kind: str | None = None
+    engagement_id: str | None = None,
+    kind: str | None = None,
+    source_session_id: str | None = None,
 ) -> list[SecurityFinding]:
     """列当前 engagement 的 artifact（L1 隔离）；可按 kind 过滤，最新在前。"""
     sf = session_factory()
@@ -908,7 +947,89 @@ async def list_artifacts(
             q = q.where(SecurityFinding.engagement_id == engagement_id)
         if kind:
             q = q.where(SecurityFinding.kind == kind)
+        if source_session_id:
+            q = q.where(SecurityFinding.source_session_id == source_session_id)
         q = q.order_by(SecurityFinding.created_at.desc()).limit(500)
+        return list((await db.execute(q)).scalars().all())
+
+
+async def get_artifact(artifact_id: str) -> SecurityFinding | None:
+    """按 id 读取单个产物；供受控详情与 Rust Core 导出使用。"""
+    sf = session_factory()
+    async with sf() as db:
+        return await db.get(SecurityFinding, artifact_id)
+
+
+async def save_approval_history(
+    *,
+    decision_id: str,
+    call_id: str,
+    tool_name: str,
+    session_id: str,
+    actor: str,
+    decision: str,
+    risk: str = "",
+    risk_source: str = "",
+    target: str = "",
+    scope: str = "",
+    impact: str = "",
+    message: str = "",
+    requested_at: str = "",
+    expires_at: str = "",
+) -> ApprovalHistoryRecord:
+    """持久化审批投影；call_id 唯一，防止同一请求重复决策。"""
+    sf = session_factory()
+    async with sf() as db:
+        rec = ApprovalHistoryRecord(
+            decision_id=decision_id,
+            call_id=call_id,
+            tool_name=tool_name[:200],
+            session_id=session_id[:32],
+            actor=actor[:32],
+            decision=decision[:32],
+            risk=risk[:16],
+            risk_source=risk_source[:16],
+            target=target,
+            scope=scope,
+            impact=impact,
+            message=message,
+            requested_at=requested_at[:64],
+            expires_at=expires_at[:64],
+        )
+        db.add(rec)
+        await db.commit()
+        await db.refresh(rec)
+        return rec
+
+
+async def mark_approval_audited(decision_id: str, entry_hash: str) -> bool:
+    sf = session_factory()
+    async with sf() as db:
+        result = await db.execute(
+            update(ApprovalHistoryRecord)
+            .where(ApprovalHistoryRecord.decision_id == decision_id)
+            .values(audit_recorded=True, entry_hash=entry_hash)
+        )
+        await db.commit()
+        return result.rowcount > 0
+
+
+async def list_approval_history(limit: int = 100) -> list[ApprovalHistoryRecord]:
+    sf = session_factory()
+    async with sf() as db:
+        q = select(ApprovalHistoryRecord).order_by(ApprovalHistoryRecord.decided_at.desc()).limit(limit)
+        return list((await db.execute(q)).scalars().all())
+
+
+async def list_unaudited_approvals(limit: int = 20) -> list[ApprovalHistoryRecord]:
+    sf = session_factory()
+    async with sf() as db:
+        q = (
+            select(ApprovalHistoryRecord)
+            .where(ApprovalHistoryRecord.audit_recorded.is_(False))
+            .order_by(ApprovalHistoryRecord.decided_at)
+            .limit(limit)
+        )
         return list((await db.execute(q)).scalars().all())
 
 

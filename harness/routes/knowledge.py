@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from pathlib import Path
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -52,48 +54,29 @@ class KnowledgePatch(BaseModel):
 # ─── 辅助 ────────────────────────────────────────────────────────────
 
 def _name_id(name: str) -> str:
-    """与 nexus-svc db.nameID 一致：name≤32 直接用 name，否则取 sha256 前 8 字节 hex。
-
-    知识条目的 DB 主键须与 nexus 扫描 workspace 文件时算出的 id 一致——否则 nexus 启动
-    reconcile 会用不同 id 再插一行造成重复，或把 harness 写的行当孤儿 prune 掉。
-    """
+    """为知识名称生成稳定主键：短名称可读，长名称使用固定摘要。"""
     return name if len(name) <= 32 else hashlib.sha256(name.encode()).hexdigest()[:16]
 
 
-def _write_knowledge_file(name: str, title: str, category: str, content: str, tags: list[str]) -> None:
-    """把知识条目落成 workspace/knowledge/<name>.md（canonical）。同步 IO 隔离于此避 ASYNC240。
-
-    这是知识条目的权威副本：nexus 启动会扫 workspace 文件 reconcile DB（Prune 掉无文件的
-    DB 行），故只写 DB 的知识会在 nexus 重启后消失。写文件后该条目免 prune、且能被 nexus 索引。
-    """
-    s = get_settings()
-    if "/" in name or not name.strip():
-        return
-    kb_dir = Path(s.workspace_dir) / "knowledge"
-    kb_dir.mkdir(parents=True, exist_ok=True)
-    lines = ["---", f"name: {name}", f"title: {title or name}"]
-    if category:
-        lines.append(f"category: {category}")
-    if tags:
-        lines.append("tags:")
-        lines.extend(f"  - {t}" for t in tags)
-    lines.extend(["---", "", content or ""])
-    (kb_dir / f"{name}.md").write_text("\n".join(lines), encoding="utf-8")
+def _knowledge_scan_files(root: str) -> tuple[Path, list[Path]] | None:
+    base = Path(root).expanduser()
+    if not base.is_dir():
+        return None
+    return base, sorted(base.rglob("*.md"))
 
 
-def _remove_knowledge_file(name: str) -> None:
-    """删除知识条目时移除其 workspace/knowledge/<name>.md，否则 nexus 下次扫描会用残留文件复活它。"""
-    s = get_settings()
-    if "/" in name or not name.strip():
-        return
-    (Path(s.workspace_dir) / "knowledge" / f"{name}.md").unlink(missing_ok=True)
+def _read_knowledge_markdown(base: Path, markdown_file: Path) -> tuple[str, str, str]:
+    content = markdown_file.read_text(encoding="utf-8")
+    relative = markdown_file.relative_to(base)
+    category = str(relative.parent).replace("\\", "/")
+    return content, "" if category == "." else category, markdown_file.stem
 
 
 # ─── 路由 ────────────────────────────────────────────────────────────
 
 @router.get("/knowledge")
-async def list_knowledge(_: dict = Depends(require_auth)) -> list[dict]:
-    """列出所有知识条目（读侧，P2 从 nexus 收回）。"""
+async def list_knowledge(_: Annotated[dict, Depends(require_auth)]) -> list[dict]:
+    """列出数据库中的知识条目。"""
     async with session_factory()() as db:
         rows = (await db.execute(
             select(KnowledgeRecord).order_by(KnowledgeRecord.name)
@@ -102,7 +85,7 @@ async def list_knowledge(_: dict = Depends(require_auth)) -> list[dict]:
 
 
 @router.get("/knowledge/{kid}")
-async def get_knowledge(kid: str, _: dict = Depends(require_auth)) -> dict:
+async def get_knowledge(kid: str, _: Annotated[dict, Depends(require_auth)]) -> dict:
     """按 id 取单个知识条目。"""
     async with session_factory()() as db:
         rec = await get_or_404(db, KnowledgeRecord, kid, "知识条目不存在")
@@ -112,7 +95,7 @@ async def get_knowledge(kid: str, _: dict = Depends(require_auth)) -> dict:
 @router.post("/knowledge/register", status_code=201)
 async def register_knowledge(
     req: RegisterKnowledgeRequest,
-    _: dict = Depends(require_auth),
+    _: Annotated[dict, Depends(require_auth)],
 ) -> dict:
     title = req.title or extract_h1(req.content) or req.name
     kid = _name_id(req.name)
@@ -129,15 +112,21 @@ async def register_knowledge(
             db.add(rec)
         await db.commit()
         await db.refresh(rec)
-        _write_knowledge_file(req.name, title, req.category, req.content, req.tags)
-        vec_upsert(rec.id, rec.name, rec.title, rec.category, rec.content)
+        await asyncio.to_thread(
+            vec_upsert,
+            rec.id,
+            rec.name,
+            rec.title,
+            rec.category,
+            rec.content,
+        )
         return knowledge_to_dict(rec)
 
 
 @router.post("/knowledge/register-md", status_code=201)
 async def register_knowledge_md(
     req: RegisterKnowledgeMdRequest,
-    auth: dict = Depends(require_auth),
+    auth: Annotated[dict, Depends(require_auth)],
 ) -> dict:
     """从 Markdown 文本（含 frontmatter）注册知识条目，与 agent/skill 风格一致。"""
     fm, body = parse_frontmatter(req.md)
@@ -161,7 +150,9 @@ async def register_knowledge_md(
 
 @router.patch("/knowledge/{kid}")
 async def update_knowledge(
-    kid: str, patch: KnowledgePatch, _: dict = Depends(require_auth)
+    kid: str,
+    patch: KnowledgePatch,
+    _: Annotated[dict, Depends(require_auth)],
 ) -> dict:
     async with session_factory()() as db:
         rec = await get_or_404(db, KnowledgeRecord, kid, "知识条目不存在")
@@ -170,44 +161,55 @@ async def update_knowledge(
         if patch.tags is not None:
             rec.tags = json.dumps(patch.tags)
         await db.commit()
+        await db.refresh(rec)
+        await asyncio.to_thread(
+            vec_upsert,
+            rec.id,
+            rec.name,
+            rec.title,
+            rec.category,
+            rec.content,
+        )
         return knowledge_to_dict(rec)
 
 
 @router.delete("/knowledge/{kid}", status_code=204)
-async def delete_knowledge(kid: str, _: dict = Depends(require_auth)) -> None:
+async def delete_knowledge(
+    kid: str,
+    _: Annotated[dict, Depends(require_auth)],
+) -> None:
     async with session_factory()() as db:
-        rec = await get_or_404(db, KnowledgeRecord, kid, "知识条目不存在")
-        name = rec.name
+        await get_or_404(db, KnowledgeRecord, kid, "知识条目不存在")
         await db.execute(delete(KnowledgeRecord).where(KnowledgeRecord.id == kid))
         await db.commit()
-    _remove_knowledge_file(name)
-    vec_delete(kid)
+    await asyncio.to_thread(vec_delete, kid)
 
 
 @router.post("/knowledge/scan")
-async def scan_knowledge(_: dict = Depends(require_auth)) -> dict:
+async def scan_knowledge(_: Annotated[dict, Depends(require_auth)]) -> dict:
     """扫描 HARNESS_REFERENCES_DIR 批量注册知识条目。"""
     s = get_settings()
     if not s.references_dir:
         raise HTTPException(400, "未配置 HARNESS_REFERENCES_DIR")
-    base = Path(s.references_dir).expanduser()
-    if not base.is_dir():
-        raise HTTPException(400, f"目录不存在：{base}")
+    scan = await asyncio.to_thread(_knowledge_scan_files, s.references_dir)
+    if scan is None:
+        raise HTTPException(400, f"目录不存在：{s.references_dir}")
+    base, markdown_files = scan
 
     # knowledge scan 调用结构化的 RegisterKnowledgeRequest 而非原始 md 文本，
     # 且需要从相对路径提取 category，无法直接套用 scan_and_register 的 md-text 接口。
     registered, skipped = 0, 0
-    for md_file in sorted(base.rglob("*.md")):
+    for md_file in markdown_files:
         try:
-            content = md_file.read_text(encoding="utf-8")
-            rel = md_file.relative_to(base)
-            category = str(rel.parent).replace("\\", "/")
-            if category == ".":
-                category = ""
+            content, category, name = await asyncio.to_thread(
+                _read_knowledge_markdown,
+                base,
+                md_file,
+            )
             await register_knowledge(
                 RegisterKnowledgeRequest(
-                    name=md_file.stem,
-                    title=extract_h1(content) or md_file.stem,
+                    name=name,
+                    title=extract_h1(content) or name,
                     category=category,
                     content=content,
                 ),
@@ -225,7 +227,7 @@ _REINDEX_BATCH = 100   # 每批处理条数，防止大 KB 一次性加载到内
 
 
 @router.post("/knowledge/reindex")
-async def reindex_knowledge(_: dict = Depends(require_auth)) -> dict:
+async def reindex_knowledge(_: Annotated[dict, Depends(require_auth)]) -> dict:
     """将所有现有 KB 文章重新写入 Qdrant 向量索引（backfill）。
 
     分批（每批 100 条）处理，失败条目记录 warning 日志。
@@ -247,8 +249,14 @@ async def reindex_knowledge(_: dict = Depends(require_auth)) -> dict:
 
         for rec in batch:
             try:
-                vec_upsert(rec.id, rec.name, rec.title or rec.name,
-                           rec.category or "", rec.content or "")
+                await asyncio.to_thread(
+                    vec_upsert,
+                    rec.id,
+                    rec.name,
+                    rec.title or rec.name,
+                    rec.category or "",
+                    rec.content or "",
+                )
                 indexed += 1
             except Exception as exc:  # noqa: BLE001
                 skipped += 1
