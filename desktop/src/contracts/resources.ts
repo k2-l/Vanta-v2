@@ -12,6 +12,47 @@ export type ApprovalWire = {
   session_id: string;
   requested_at: string;
   expires_at: string;
+  /** 权威风险等级（后端派生/工具声明）；risk_source 区分二者，前端如实展示。 */
+  risk?: "critical" | "high" | "medium" | "low" | (string & {});
+  /** "declared"=工具显式声明；"derived"=按 category 回退（前端标注"派生"）。 */
+  risk_source?: "declared" | "derived" | (string & {});
+  /** 操作对象（从工具入参提取）。 */
+  target?: string;
+  /** 作用范围（执行位置 + 授权 engagement）。 */
+  scope?: string;
+  /** 预计影响（按风险等级派生）。 */
+  impact?: string;
+};
+
+/**
+ * 审批决策历史项（GET /chat/approvals/history）——来自哈希链审计账本的服务端权威记录，
+ * 进程重启后仍可查询（区别于 localStorage 的本机记录）。
+ * decision_id 为独立稳定 id；entry_hash 是审计证据（哈希链条目），失败时为空串。
+ */
+export type ApprovalDecisionRecord = {
+  decision_id: string;
+  call_id: string;
+  tool_name: string;
+  session_id: string;
+  decision: "approved" | "rejected";
+  risk?: string;
+  risk_source?: string;
+  target?: string;
+  scope?: string;
+  impact?: string;
+  message?: string;
+  decided_at: string;
+  entry_hash?: string;
+};
+
+/** POST /chat/approvals/{call_id} 决策响应。 */
+export type ApprovalDecisionResult = {
+  ok: boolean;
+  decision_id: string;
+  decision: "approved" | "rejected";
+  /** 审计是否成功入账；false 表示决策生效但审计写入失败（entry_hash 为空）。 */
+  audit_recorded: boolean;
+  entry_hash: string;
 };
 
 /** 看板 artifact（secret 类 content 为空串，只留 vault_ref）。 */

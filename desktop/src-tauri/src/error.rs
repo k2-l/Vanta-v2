@@ -61,11 +61,6 @@ impl ClientError {
         self.code = Some(code.into());
         self
     }
-
-    pub fn with_request_id(mut self, id: impl Into<String>) -> Self {
-        self.request_id = Some(id.into());
-        self
-    }
 }
 
 /// reqwest 错误归一化（网络层）。

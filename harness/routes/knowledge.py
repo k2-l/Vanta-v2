@@ -67,9 +67,9 @@ def _write_knowledge_file(name: str, title: str, category: str, content: str, ta
     DB 行），故只写 DB 的知识会在 nexus 重启后消失。写文件后该条目免 prune、且能被 nexus 索引。
     """
     s = get_settings()
-    if not s.suite_dir or "/" in name or not name.strip():
+    if "/" in name or not name.strip():
         return
-    kb_dir = Path(s.suite_dir) / "knowledge"
+    kb_dir = Path(s.workspace_dir) / "knowledge"
     kb_dir.mkdir(parents=True, exist_ok=True)
     lines = ["---", f"name: {name}", f"title: {title or name}"]
     if category:
@@ -84,9 +84,9 @@ def _write_knowledge_file(name: str, title: str, category: str, content: str, ta
 def _remove_knowledge_file(name: str) -> None:
     """删除知识条目时移除其 workspace/knowledge/<name>.md，否则 nexus 下次扫描会用残留文件复活它。"""
     s = get_settings()
-    if not s.suite_dir or "/" in name or not name.strip():
+    if "/" in name or not name.strip():
         return
-    (Path(s.suite_dir) / "knowledge" / f"{name}.md").unlink(missing_ok=True)
+    (Path(s.workspace_dir) / "knowledge" / f"{name}.md").unlink(missing_ok=True)
 
 
 # ─── 路由 ────────────────────────────────────────────────────────────

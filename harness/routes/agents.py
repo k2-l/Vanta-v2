@@ -1,144 +1,81 @@
-"""Agent CRUD — 纯文件系统，Claude Code 格式。
+"""Agent CRUD —— 统一 EntityProvider 协议。
 
-数据源: {VANTA_ROOT}/workspace/agents/*/AGENT.md
-无 DB 依赖。
+读写全部委托给 harness.providers.get_provider("agent")，与运行时（run_agent /
+上下文 L1 注入）共享同一 provider 单例与同一真源 settings.agents_dir/<name>/AGENT.md。
+路由不再自持文件系统逻辑、目录默认值或 frontmatter 解析——写入即收敛为 CC 标准字段。
 """
 
 from __future__ import annotations
 
-import os
-import re
-from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 
 from harness.app.auth import require_auth
-from harness.contracts.models import ProviderName, normalize_provider_name
+from harness.contracts.frontmatter import normalize_str_list, parse_bool, split_frontmatter
+from harness.contracts.models import (
+    AgentFull,
+    EntityFull,
+    EntityMeta,
+    ProviderName,
+    normalize_provider_name,
+)
+from harness.providers import get_provider
 
 router = APIRouter(prefix="/v1", tags=["agents"])
 
-FRONT_MATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
-
 
 # ═══════════════════════════════════════════════════════════
-# 文件系统辅助
+# 辅助
 # ═══════════════════════════════════════════════════════════
 
 
-def _agents_root() -> Path:
-    vanta_root = os.getenv("VANTA_ROOT", str(Path.home() / "Vanta"))
-    d = Path(vanta_root) / "workspace" / "agents"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def _agent_dir(name: str) -> Path:
-    return _agents_root() / name
-
-
-def _agent_md_path(name: str) -> Path:
-    return _agent_dir(name) / "AGENT.md"
-
-
-def _parse_agent_md(raw: str) -> tuple[dict, str]:
-    """解析 YAML front matter，返回 (meta, body)"""
-    match = FRONT_MATTER_RE.match(raw)
-    if not match:
-        return {}, raw
-
-    import yaml
-
-    try:
-        meta = yaml.safe_load(match.group(1)) or {}
-    except yaml.YAMLError:
-        meta = {}
-
-    return meta, raw[match.end() :]
-
-
-def _read_agent(name: str) -> tuple[dict, str] | None:
-    """读取并解析 AGENT.md，返回 (meta, body)；不存在返回 None"""
-    md_path = _agent_md_path(name)
-    if not md_path.is_file():
-        return None
-    raw = md_path.read_text(encoding="utf-8")
-    return _parse_agent_md(raw)
-
-
-def _write_agent(name: str, meta: dict, body: str) -> None:
-    """写入 AGENT.md"""
-    agent_dir = _agent_dir(name)
-    agent_dir.mkdir(parents=True, exist_ok=True)
-
-    lines = []
-    for key in ["name", "description", "model", "provider"]:
-        if key in meta and meta[key]:
-            lines.append(f"{key}: {meta[key]}")
-    if "tools" in meta and meta["tools"]:
-        lines.append("tools:")
-        for t in meta["tools"]:
-            lines.append(f"  - {t}")
-    if "skills" in meta and meta["skills"]:
-        lines.append("skills:")
-        for s in meta["skills"]:
-            lines.append(f"  - {s}")
-    for key in ["max_tokens", "temperature"]:
-        if key in meta and meta[key] is not None:
-            lines.append(f"{key}: {meta[key]}")
-    for key in ["allow_autonomous", "enable_critic"]:
-        if key in meta:
-            lines.append(f"{key}: {'true' if meta[key] else 'false'}")
-
-    content = "---\n" + "\n".join(lines) + "\n---\n" + body
-    _agent_md_path(name).write_text(content, encoding="utf-8")
-
-
-def _delete_agent_dir(name: str) -> None:
-    """删除整个 Agent 目录"""
-    import shutil
-
-    agent_dir = _agent_dir(name)
-    if agent_dir.is_dir():
-        shutil.rmtree(agent_dir)
-
-
-def _list_agents() -> list[dict]:
-    """扫描所有 Agent 目录，返回 L1 信息列表"""
-    root = _agents_root()
-    agents = []
-    for agent_dir in sorted(root.iterdir()):
-        if not agent_dir.is_dir():
-            continue
-        name = agent_dir.name
-        parsed = _read_agent(name)
-        if parsed is None:
-            continue
-        meta, _body = parsed
-        agents.append(
-            {
-                "id": name,
-                "name": name,
-                "description": meta.get("description", ""),
-                "model": meta.get("model", ""),
-                "provider": meta.get("provider"),
-                "tools": meta.get("tools", []),
-                "skills": meta.get("skills", []),
-                "enable_critic": meta.get("enable_critic", False),
-            }
-        )
-    return agents
+def _provider():
+    return get_provider("agent")
 
 
 def _invalidate_caches() -> None:
-    """通知缓存失效"""
+    """写入后失效上下文缓存（L1 清单注入）。provider.write/delete 已即时更新自身索引。"""
     try:
         from harness.core.context.builder import invalidate_context_cache
 
         invalidate_context_cache()
     except Exception:
         pass
+
+
+def _agent_dict(full: EntityFull) -> dict:
+    """AgentFull → API 响应（CC 标准字段）。"""
+    return {
+        "id": full.meta.name,
+        "name": full.meta.name,
+        "description": full.meta.description,
+        "content": full.content,
+        "model": full.model or "",
+        "provider": full.provider,
+        "tools": getattr(full, "tools", []),
+        "enable_critic": getattr(full, "enable_critic", False),
+        "disable_model_invocation": full.meta.disable_model_invocation,
+        "user_invocable": full.meta.user_invocable,
+    }
+
+
+def _agent_from_fm(fm: dict, body: str) -> AgentFull:
+    """frontmatter dict + 正文 → AgentFull（provider 归一化可能抛 ValueError）。"""
+    return AgentFull(
+        meta=EntityMeta(
+            name=(fm.get("name") or "").strip(),
+            description=fm.get("description", "") or "",
+            disable_model_invocation=parse_bool(fm.get("disable-model-invocation")),
+            user_invocable=parse_bool(fm.get("user-invocable"), True),
+        ),
+        content=body.strip(),
+        model=(fm.get("model") or None),
+        provider=normalize_provider_name(fm.get("provider")),
+        tools=normalize_str_list(fm.get("tools")),
+        enable_critic=parse_bool(fm.get("enable_critic")),
+    )
 
 
 # ═══════════════════════════════════════════════════════════
@@ -155,12 +92,8 @@ class AgentPatch(BaseModel):
     description: str | None = None
     content: str | None = None
     tools: list[str] | None = None
-    skills: list[str] | None = None
     model: str | None = None
     provider: ProviderName | None = None
-    max_tokens: int | None = None
-    temperature: float | None = None
-    allow_autonomous: bool | None = None
     enable_critic: bool | None = None
 
     @field_validator("provider", mode="before")
@@ -176,29 +109,22 @@ class AgentPatch(BaseModel):
 
 @router.get("/agents")
 async def list_agents(_: Annotated[dict, Depends(require_auth)]) -> list[dict]:
-    return _list_agents()
+    p = _provider()
+    p.reload()  # 管理端读：重扫磁盘保证列表最新
+    out: list[dict] = []
+    for name in p.all_names():
+        full = p.get(name)
+        if full is not None:
+            out.append(_agent_dict(full))
+    return out
 
 
 @router.get("/agents/{agent_id}")
 async def get_agent(agent_id: str, _: Annotated[dict, Depends(require_auth)]) -> dict:
-    parsed = _read_agent(agent_id)
-    if parsed is None:
+    full = _provider().get(agent_id)
+    if full is None:
         raise HTTPException(404, "Agent 不存在")
-    meta, body = parsed
-    return {
-        "id": agent_id,
-        "name": meta.get("name", agent_id),
-        "description": meta.get("description", ""),
-        "content": body,
-        "model": meta.get("model", ""),
-        "provider": meta.get("provider"),
-        "tools": meta.get("tools", []),
-        "skills": meta.get("skills", []),
-        "enable_critic": meta.get("enable_critic", False),
-        "max_tokens": meta.get("max_tokens", 8192),
-        "temperature": meta.get("temperature", 0.5),
-        "allow_autonomous": meta.get("allow_autonomous", False),
-    }
+    return _agent_dict(full)
 
 
 @router.post("/agents/register", status_code=201)
@@ -206,31 +132,17 @@ async def register_agent(
     req: RegisterAgentRequest,
     _: Annotated[dict, Depends(require_auth)],
 ) -> dict:
-    meta, body = _parse_agent_md(req.md)
-    name = (meta.get("name") or "").strip()
+    fm, body = split_frontmatter(req.md)
+    name = (fm.get("name") or "").strip()
     if not name:
         raise HTTPException(400, "frontmatter 缺少 name 字段")
     try:
-        provider = normalize_provider_name(meta.get("provider"))
+        full = _agent_from_fm(fm, body)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
-    if provider is not None:
-        meta["provider"] = provider
-
-    _write_agent(name, meta, body)
+    _provider().write(name, full)
     _invalidate_caches()
-
-    return {
-        "id": name,
-        "name": name,
-        "description": meta.get("description", ""),
-        "content": body,
-        "model": meta.get("model", ""),
-        "provider": meta.get("provider"),
-        "tools": meta.get("tools", []),
-        "skills": meta.get("skills", []),
-        "enable_critic": meta.get("enable_critic", False),
-    }
+    return _agent_dict(full)
 
 
 @router.patch("/agents/{agent_id}")
@@ -239,69 +151,49 @@ async def update_agent(
     patch: AgentPatch,
     _: Annotated[dict, Depends(require_auth)],
 ) -> dict:
-    parsed = _read_agent(agent_id)
-    if parsed is None:
+    p = _provider()
+    cur = p.get(agent_id)
+    if cur is None:
         raise HTTPException(404, "Agent 不存在")
 
-    meta, body = parsed
+    rename = patch.name is not None and patch.name != agent_id
+    new_id = patch.name if rename else agent_id
 
-    if patch.name is not None and patch.name != agent_id:
-        _delete_agent_dir(agent_id)
-        agent_id = patch.name
+    new_full = AgentFull(
+        meta=EntityMeta(
+            name=new_id,  # frontmatter 名与目录名（=id=loader 索引键）对齐
+            description=patch.description if patch.description is not None else cur.meta.description,
+            disable_model_invocation=cur.meta.disable_model_invocation,
+            user_invocable=cur.meta.user_invocable,
+        ),
+        content=patch.content if patch.content is not None else cur.content,
+        model=(patch.model or None) if patch.model is not None else cur.model,
+        provider=patch.provider if "provider" in patch.model_fields_set else cur.provider,
+        tools=patch.tools if patch.tools is not None else getattr(cur, "tools", []),
+        enable_critic=(
+            patch.enable_critic
+            if patch.enable_critic is not None
+            else getattr(cur, "enable_critic", False)
+        ),
+    )
 
-    if patch.description is not None:
-        meta["description"] = patch.description
-    if patch.content is not None:
-        body = patch.content
-    if patch.tools is not None:
-        meta["tools"] = patch.tools
-    if patch.skills is not None:
-        meta["skills"] = patch.skills
-    if patch.model is not None:
-        meta["model"] = patch.model
-    if "provider" in patch.model_fields_set:
-        if patch.provider is None:
-            meta.pop("provider", None)
-        else:
-            meta["provider"] = patch.provider
-    if patch.max_tokens is not None:
-        meta["max_tokens"] = patch.max_tokens
-    if patch.temperature is not None:
-        meta["temperature"] = patch.temperature
-    if patch.allow_autonomous is not None:
-        meta["allow_autonomous"] = patch.allow_autonomous
-    if patch.enable_critic is not None:
-        meta["enable_critic"] = patch.enable_critic
-
-    meta["name"] = agent_id  # frontmatter 名与目录名（=id=loader 索引键）对齐
-    _write_agent(agent_id, meta, body)
+    if rename:
+        p.delete(agent_id)
+    p.write(new_id, new_full)
     _invalidate_caches()
-
-    return {
-        "id": agent_id,
-        "name": meta.get("name", agent_id),
-        "description": meta.get("description", ""),
-        "content": body,
-        "model": meta.get("model", ""),
-        "provider": meta.get("provider"),
-        "tools": meta.get("tools", []),
-        "skills": meta.get("skills", []),
-        "enable_critic": meta.get("enable_critic", False),
-    }
+    return _agent_dict(new_full)
 
 
 @router.delete("/agents/{agent_id}", status_code=204)
 async def delete_agent(agent_id: str, _: Annotated[dict, Depends(require_auth)]) -> None:
-    if not _agent_dir(agent_id).is_dir():
+    if not _provider().delete(agent_id):
         raise HTTPException(404, "Agent 不存在")
-    _delete_agent_dir(agent_id)
     _invalidate_caches()
 
 
 @router.get("/agents/{agent_id}/deps")
 async def agent_dep_tree(agent_id: str, _: Annotated[dict, Depends(require_auth)]) -> dict:
-    """文件系统模式下无依赖树概念，返回空"""
-    parsed = _read_agent(agent_id)
-    if parsed is None:
+    """文件系统模式下无依赖树概念，返回空。"""
+    if not _provider().has(agent_id):
         raise HTTPException(404, "Agent 不存在")
     return {"name": agent_id, "tree": ""}

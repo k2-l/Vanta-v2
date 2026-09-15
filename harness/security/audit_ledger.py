@@ -107,14 +107,16 @@ async def append_audit(
 
 
 async def query_audit(
-    engagement_id: str | None = None, limit: int = 100
+    engagement_id: str | None = None, limit: int = 100, action: str | None = None
 ) -> list[AuditLedgerRecord]:
-    """查询审计记录（按时间倒序，可按 engagement 过滤）。"""
+    """查询审计记录（按时间倒序，可按 engagement / action 过滤）。"""
     sf = session_factory()
     async with sf() as db:
         q = select(AuditLedgerRecord).order_by(AuditLedgerRecord.created_at.desc()).limit(limit)
         if engagement_id is not None:
             q = q.where(AuditLedgerRecord.engagement_id == engagement_id)
+        if action is not None:
+            q = q.where(AuditLedgerRecord.action == action)
         return list((await db.execute(q)).scalars().all())
 
 

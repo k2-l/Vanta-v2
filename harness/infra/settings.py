@@ -1,6 +1,7 @@
 """集中配置。所有可调参数在此声明，运行时通过 get_settings() 获取。"""
 
 import json
+import os
 import tomllib
 from functools import lru_cache
 from pathlib import Path
@@ -54,6 +55,10 @@ class TomlConfigSource(PydanticBaseSettingsSource):
             result["log_level"] = server["log_level"]
         if "cors_origins" in server:
             result["cors_origins"] = server["cors_origins"]
+        if "ssl_certfile" in server:
+            result["ssl_certfile"] = server["ssl_certfile"]
+        if "ssl_keyfile" in server:
+            result["ssl_keyfile"] = server["ssl_keyfile"]
 
         # [auth] 节 — 有 alias 的用 alias，其余直接用字段名
         auth = data.get("auth", {})
@@ -291,6 +296,11 @@ class Settings(BaseSettings):
     api_host: str = "127.0.0.1"
     api_port: int = 8765
 
+    # TLS：两者都设置时 harness-api 以 HTTPS 启动；开发联调可留空使用 HTTP。
+    # 上线时配置服务器证书与私钥，并将客户端连接地址切换为 HTTPS。
+    ssl_certfile: str | None = None
+    ssl_keyfile: str | None = None
+
     # CORS：开发期 Vite dev server 默认 :5173；生产期可加自定义域名。
     # Tauri 桌面瘦客户端的 webview origin 也在此放行（v2：macOS/Linux 为 tauri://localhost，
     # Windows 为 http(s)://tauri.localhost；dev 默认端口 :1420）。凭据走 Authorization 头非 cookie。
@@ -382,7 +392,7 @@ class Settings(BaseSettings):
     profile_path: str = "data/profile.md"
 
     # 外部套件路径（security-suite 等）
-    # workspace_dir: 工具执行时的 cwd，留空则用 Harness 根目录
+    # workspace_dir: 工具执行时的 cwd；suite_dir 留空则用仓库根的 workspace/
     # skills_dir:    技能文件夹（包含 <name>/SKILL.md 子目录）
     # agents_dir:    Agent 文件夹（包含 <name>.md 文件）
     # 套件根目录（自动推断 workspace/skills/agents/references 子路径）
@@ -390,19 +400,27 @@ class Settings(BaseSettings):
 
     @property
     def workspace_dir(self) -> str:
-        return self.suite_dir
+        # VANTA_ROOT 是旧部署的显式覆盖；普通配置使用 suite_dir，且相对路径
+        # 固定相对仓库根，避免进程 cwd 变化时工具与 provider 指向不同目录。
+        vanta_root = os.getenv("VANTA_ROOT")
+        if vanta_root:
+            return str((Path(vanta_root).expanduser() / "workspace").resolve())
+        root = Path(self.suite_dir or "workspace").expanduser()
+        if not root.is_absolute():
+            root = Path(__file__).resolve().parents[2] / root
+        return str(root.resolve())
 
     @property
     def skills_dir(self) -> str:
-        return f"{self.suite_dir}/skills" if self.suite_dir else ""
+        return str(Path(self.workspace_dir) / "skills")
 
     @property
     def agents_dir(self) -> str:
-        return f"{self.suite_dir}/agents" if self.suite_dir else ""
+        return str(Path(self.workspace_dir) / "agents")
 
     @property
     def references_dir(self) -> str:
-        return f"{self.suite_dir}/references" if self.suite_dir else ""
+        return str(Path(self.workspace_dir) / "references")
 
     # 历史装载策略
     history_recent_n: int = 16              # Supervisor 每次注入最近 N 条消息

@@ -1,7 +1,7 @@
 //! 后端网关（方案 §8）。
 //!
 //! 职责：按 connection_id 解析地址（前端不传任意 URL）、注入凭据、设定超时、
-//! 归一化错误。G0 覆盖 REST 与 /health、/auth；SSE/WS 在 G1/G2 增量。
+//! 归一化错误。流式桥接由 `commands::stream` 处理。
 
 use crate::connections::ConnectionStore;
 use crate::credentials;
@@ -35,23 +35,49 @@ pub enum ApiOperation {
     },
     #[serde(rename = "sessions.messages")]
     SessionsMessages {
+        #[serde(rename = "sessionId", alias = "session_id")]
         session_id: String,
         #[serde(default)]
         limit: Option<u32>,
     },
     #[serde(rename = "sessions.phases")]
-    SessionsPhases { session_id: String },
+    SessionsPhases {
+        #[serde(rename = "sessionId", alias = "session_id")]
+        session_id: String,
+    },
     #[serde(rename = "approvals.list")]
     ApprovalsList,
     #[serde(rename = "approvals.decide")]
-    ApprovalsDecide { call_id: String, approved: bool },
+    ApprovalsDecide {
+        #[serde(rename = "callId", alias = "call_id")]
+        call_id: String,
+        approved: bool,
+    },
+    #[serde(rename = "approvals.history")]
+    ApprovalsHistory {
+        #[serde(default)]
+        limit: Option<u32>,
+    },
     #[serde(rename = "artifacts.list")]
     ArtifactsList {
         #[serde(default)]
         kind: Option<String>,
     },
     #[serde(rename = "budget.get")]
-    BudgetGet { session_id: String },
+    BudgetGet {
+        #[serde(rename = "sessionId", alias = "session_id")]
+        session_id: String,
+    },
+    #[serde(rename = "capabilities.agents")]
+    CapabilitiesAgents,
+    #[serde(rename = "capabilities.skills")]
+    CapabilitiesSkills,
+    #[serde(rename = "capabilities.mcp")]
+    CapabilitiesMcp,
+    #[serde(rename = "capabilities.knowledge")]
+    CapabilitiesKnowledge,
+    #[serde(rename = "capabilities.containers")]
+    CapabilitiesContainers,
 }
 
 enum Method {
@@ -114,6 +140,12 @@ impl ApiOperation {
                 body: Some(serde_json::json!({ "approved": approved })),
                 auth: true,
             },
+            ApiOperation::ApprovalsHistory { limit } => Resolved {
+                method: Method::Get,
+                path: format!("/chat/approvals/history?limit={}", limit.unwrap_or(100)),
+                body: None,
+                auth: true,
+            },
             ApiOperation::ArtifactsList { kind } => Resolved {
                 method: Method::Get,
                 path: match kind {
@@ -129,20 +161,70 @@ impl ApiOperation {
                 body: None,
                 auth: true,
             },
+            ApiOperation::CapabilitiesAgents => Resolved {
+                method: Method::Get,
+                path: "/v1/agents".into(),
+                body: None,
+                auth: true,
+            },
+            ApiOperation::CapabilitiesSkills => Resolved {
+                method: Method::Get,
+                path: "/v1/skills".into(),
+                body: None,
+                auth: true,
+            },
+            ApiOperation::CapabilitiesMcp => Resolved {
+                method: Method::Get,
+                path: "/v1/mcp/servers".into(),
+                body: None,
+                auth: true,
+            },
+            ApiOperation::CapabilitiesKnowledge => Resolved {
+                method: Method::Get,
+                path: "/v1/knowledge".into(),
+                body: None,
+                auth: true,
+            },
+            ApiOperation::CapabilitiesContainers => Resolved {
+                method: Method::Get,
+                path: "/v1/containers".into(),
+                body: None,
+                auth: true,
+            },
         }
     }
 }
 
-fn client() -> CmdResult<reqwest::Client> {
-    reqwest::Client::builder()
+/// 按连接的 TLS 策略构建 reqwest client。
+///
+/// custom_ca 时把指定的 PEM 证书**追加**到信任根（系统根之外增量，不降低校验强度），
+/// 让桌面端无需把自签证书装进操作系统信任库即可校验通过。
+/// `overall_timeout=None` 表示不设整体请求超时（用于可能长时间的对话流）。
+pub fn build_client(ca_cert_path: Option<&str>, overall_timeout: Option<Duration>) -> CmdResult<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(6))
-        .timeout(Duration::from_secs(30))
-        .user_agent("Vanta-Desktop/0.0.0")
-        .build()
-        .map_err(ClientError::from)
+        // 瘦客户端连的是用户自配的后端（内网/回环），绝不经环境/系统代理，
+        // 否则 HTTP(S)_PROXY 会把内网地址塞去走代理导致 connect 失败。
+        .no_proxy()
+        .user_agent("Vanta-Desktop/0.0.0");
+    if let Some(timeout) = overall_timeout {
+        builder = builder.timeout(timeout);
+    }
+    if let Some(path) = ca_cert_path {
+        let pem = std::fs::read(path).map_err(|e| {
+            ClientError::new(ErrorKind::Validation, format!("读取 CA 证书失败（{path}）：{e}"), false)
+        })?;
+        let certs = reqwest::Certificate::from_pem_bundle(&pem).map_err(|e| {
+            ClientError::new(ErrorKind::Validation, format!("CA 证书解析失败：{e}"), false)
+        })?;
+        for cert in certs {
+            builder = builder.add_root_certificate(cert);
+        }
+    }
+    builder.build().map_err(ClientError::from)
 }
 
-/// /health 响应（后端当前形状；capabilities 为未来增量，缺省即视为全 false）。
+/// /health 响应；旧后端未提供 capabilities 时缺省为全 false。
 #[derive(Debug, Deserialize)]
 struct HealthBody {
     #[allow(dead_code)]
@@ -187,9 +269,10 @@ pub struct HealthResult {
 }
 
 /// GET /health —— 探活 + 能力协商（连接未激活时也可用 base_url 直探）。
-pub async fn health(base_url: &str) -> CmdResult<HealthResult> {
+/// `ca_cert_path` 供 custom_ca 连接在探活/测试时也走自定义信任根。
+pub async fn health(base_url: &str, ca_cert_path: Option<&str>) -> CmdResult<HealthResult> {
     let start = std::time::Instant::now();
-    let resp = client()?
+    let resp = build_client(ca_cert_path, Some(Duration::from_secs(30)))?
         .get(format!("{base_url}/health"))
         .send()
         .await
@@ -223,8 +306,13 @@ pub struct LoginOutcome {
     pub expires_at: String,
 }
 
-pub async fn login(base_url: &str, connection_id: &str, password: &str) -> CmdResult<LoginOutcome> {
-    let resp = client()?
+pub async fn login(
+    base_url: &str,
+    connection_id: &str,
+    password: &str,
+    ca_cert_path: Option<&str>,
+) -> CmdResult<LoginOutcome> {
+    let resp = build_client(ca_cert_path, Some(Duration::from_secs(30)))?
         .post(format!("{base_url}/auth/login"))
         .json(&serde_json::json!({ "password": password }))
         .send()
@@ -245,9 +333,10 @@ pub async fn request(
     op: ApiOperation,
 ) -> CmdResult<serde_json::Value> {
     let base_url = store.resolve_base_url(connection_id)?;
+    let ca = store.resolve_ca(connection_id);
     let resolved = op.resolve();
     let url = format!("{base_url}{}", resolved.path);
-    let c = client()?;
+    let c = build_client(ca.as_deref(), Some(Duration::from_secs(30)))?;
     let mut builder = match resolved.method {
         Method::Get => c.get(url),
         Method::Post => c.post(url),
@@ -285,4 +374,59 @@ pub(crate) fn map_status(status: reqwest::StatusCode) -> ClientError {
     };
     let retryable = matches!(code, 502 | 503 | 504);
     ClientError::new(kind, format!("后端返回 {code}"), retryable).with_code(code.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ApiOperation;
+    use serde_json::{json, Value};
+
+    #[test]
+    fn api_operations_accept_frontend_camel_case_ids() {
+        let cases: [(Value, &str); 5] = [
+            (
+                json!({ "op": "sessions.messages", "sessionId": "session-1", "limit": 20 }),
+                "/sessions/session-1/messages?limit=20",
+            ),
+            (
+                json!({ "op": "sessions.phases", "sessionId": "session-1" }),
+                "/sessions/session-1/phases",
+            ),
+            (
+                json!({ "op": "budget.get", "sessionId": "session-1" }),
+                "/budget/session-1",
+            ),
+            (
+                json!({ "op": "approvals.decide", "callId": "call-1", "approved": true }),
+                "/chat/approvals/call-1",
+            ),
+            (
+                json!({ "op": "approvals.history", "limit": 50 }),
+                "/chat/approvals/history?limit=50",
+            ),
+        ];
+
+        for (value, expected_path) in cases {
+            let operation: ApiOperation = serde_json::from_value(value).unwrap();
+            assert_eq!(operation.resolve().path, expected_path);
+        }
+    }
+
+    #[test]
+    fn api_operations_keep_snake_case_id_aliases() {
+        let operation: ApiOperation = serde_json::from_value(json!({
+            "op": "sessions.phases",
+            "session_id": "session-1"
+        }))
+        .unwrap();
+        assert_eq!(operation.resolve().path, "/sessions/session-1/phases");
+
+        let operation: ApiOperation = serde_json::from_value(json!({
+            "op": "approvals.decide",
+            "call_id": "call-1",
+            "approved": false
+        }))
+        .unwrap();
+        assert_eq!(operation.resolve().body, Some(json!({ "approved": false })));
+    }
 }

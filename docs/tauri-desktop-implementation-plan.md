@@ -1,167 +1,51 @@
 # Vanta Desktop GUI 实施 Plan
 
-状态：**Approved / v1.0**
+状态：**Approved / v1.0**。设计基线见 [GUI 定稿规范](./tauri-desktop-gui-spec.md)；本文只记录实施范围、当前进度和验收缺口，不修改设计要求。
 
-对应设计基线：[Tauri Desktop GUI 定稿规范](./tauri-desktop-gui-spec.md)
+进度快照：**2026-09-15**，依据当前工作区（含未提交改动）及物理机反馈。代码落地不等于验收通过。
 
-## 1. 范围与原则
+## 1. 实施边界
 
-本 Plan 将现有 `desktop/` 从功能骨架推进为定稿 GUI。实现继续遵守瘦客户端边界：
-
-- React WebView 负责展示、输入和短生命周期交互状态。
-- Rust Core 负责连接、凭据、远程请求、流式桥接、路径与系统权限。
-- 后端是 Session、Run、Approval、Artifact 和 Capability 的业务真值来源。
-- 桌面端不复用 Web 页面样式，只复用契约、接口语义和必要的领域类型。
-- 未得到后端 capability 声明的功能必须禁用并说明原因。
+- React WebView 负责界面与短生命周期交互；Rust Core 负责连接、钥匙串凭据、远程请求、流式桥接和系统路径权限。Session、Run、Approval、Artifact、Capability 的业务真值在后端。
+- 桌面端不复制 Web 页面或后端 Agent 编排；WebView 不持有 JWT，也不能请求任意 URL。未获后端 capability 声明的操作必须禁用并说明原因。
+- 页面编排留在 `pages/`，数据与状态进入 `features/`；跨模块选择使用 Zustand，服务端查询使用 TanStack Query。协议变更同步 Python schema、Rust DTO/command、TypeScript 契约与 browser mock，兼容字段使用显式 alias。
 
 ## 2. 当前基线
 
-### 已完成
+开发期按已确认决策允许远程 HTTP。后端现用 `http://10.1.1.2:8765`，客户端在 HTTP 下忽略旧 CA 路径；已有 HTTPS profile 不自动迁移。HTTPS 能力保留，上线前须收口证书用途、信任库和生产连接策略。
 
-- Tauri 2 + React + TypeScript 工程地基。
-- Hash 路由与六个一级模块入口。
-- 连接配置、登录、钥匙串存储、严格 CSP 和 IPC allowlist。
-- 统一错误模型与基础诊断脱敏。
-- 会话列表、历史消息、新建会话和流式 Markdown 最小闭环。
-- 后端 SSE → Tauri Channel 桥接与停止当前流。
-- 浏览器 mock，可在无 Tauri Host 时独立走查。
+物理机浏览器访问 `/health` 正常；客户端 HTTP 测试连接和基本回答曾验证。先前对话 401 是后端上游模型密钥无效，配置修正后可回答。`run.log` 又暴露后端流收尾缺陷：未配置 Qdrant 时自动记忆写入抛异常，导致 SSE 的 ASGI traceback；本地已改为未配置时跳过自动记忆、配置后故障也不阻断回答落库。Agent/Skill 目录与工具工作目录曾分别指向旧 `/root/Vanta/workspace` 和缺失的 `suite_dir`，本地已统一并在启动时创建工作区。这些修复尚未在实际后端进程重启后复验。回答详情的 `api_request` `sessionId` / `session_id` 映射已修复；**新 Windows 包与测试尚未复验**。
 
-### 尚未完成
+| 阶段 | 已落地 | 待验收 / 待实现 |
+|---|---|---|
+| G0 / G1 地基与聊天 | Tauri 2、六模块入口、连接/登录/钥匙串、受控 IPC、SSE→Channel、会话与流式回答；物理机已验证连接和基本回答 | 回答详情新包复验；登录、长会话、停止和断线端到端验证 |
+| G1.5 Shell | 设计 token、导航/侧栏/详情、主题、快捷键、响应式与通用状态组件 | 1280×720、1100×680、960×640 截图；键盘/主题/减少动态效果走查与滚动位置恢复 |
+| G2 对话与运行 | 文本/阶段/工具/用量投影；Runs 以 sessions+phases 构建树和时间线，支持筛选、快照订阅、重连及 Chat↔Runs 跳转 | 停止/断线/重连真机验证；历史工具/Token/耗时、产物关联；服务端事件重放与运行取消未提供 |
+| G3 审批与产物 | 真实待审批队列、批准/拒绝、过期分类；后端审批请求携带 risk/target/scope/impact（工具声明或按 category 派生并标注来源），决策以独立 decision_id 标识并写入哈希链审计账本，新增 `GET /chat/approvals/history` 服务端历史，前端合并服务端历史（权威）与本次页面会话内存记录；多卡按 call_id 独立提交，审计写入失败有明确提示；只读产物列表、Markdown 预览、secret 仅元数据 | 后端问题解决后再做审批契约真机联调；过期项持久历史；产物来源关联、多类型预览、安全导出 |
+| G4 能力与设置 | 五类真实能力目录及单来源降级；七类设置入口、连接切换清理、更新未配置提示、Rust 诊断导出 | 能力可用性/位置/同步时间、连接隔离与诊断脱敏验收；通知、签名更新、版本兼容提示 |
+| G5 质量与发布 | 局部投影、流解析、脱敏和 IPC 单元测试代码 | 组件/E2E、Python 回归、可访问性、性能、平台安装/更新/回滚及发布签字 |
 
-- 定稿版桌面 Shell 与通用组件。
-- 对话步骤、工具事件、用量和运行详情投影。
-- Runs / Approvals / Artifacts / Capabilities 的真实数据页面。
-- 设置模块的完整桌面体验。
-- 端到端测试、可访问性检查和发布流水线。
+以下是**不能按“已完成”宣传的能力边界**：
 
-## 3. 交付阶段
+- `run ≈ session`；`run_subscribe` 约每 1.5 秒轮询 phases，sequence 是客户端快照序号，不是后端可重放事件。后端当前声明 `run_snapshot=true`，`event_replay=false`，`run_cancel=false`，`artifact_export=false`；停止按钮只停止当前对话流。
+- 审批历史以服务端哈希链审计账本为权威（`GET /chat/approvals/history`，进程重启后仍可查询）；本次页面会话的乐观记录只在内存保留完整请求，旧版 `vanta.approvals.decisions.*` 存储在启动时清理。按 call_id 与服务端历史合并、服务端优先；多卡提交按 call_id 独立跟踪。决策以独立 decision_id 标识，entry_hash 作为审计证据（写入失败时 `audit_recorded=false` 且 entry_hash 为空，决策仍生效，界面明确提示；页面关闭后该未入账记录不再可见）。风险/对象/范围/影响由后端在审批请求中携带（工具 `risk_level` 声明或按 category 派生并标注 `risk_source`）。仍待验收：后端问题解决后的真机联调；过期项随后端队列清理消失后无历史；审计写入失败的持久可追溯性需要后端补偿机制。
+- Artifacts 是 `/v1/artifacts` 的只读看板资源，大小由正文估算、时间来自 `created_at`；来源尚未关联到 session/run，导出入口因 capability=false 禁用。
+- 能力目录来自 `/v1/agents`、`/v1/skills`、`/v1/mcp/servers`、`/v1/knowledge`、`/v1/containers`。Agent/Skill/Knowledge 的“可用”尚未验证依赖就绪；容器状态可能退回数据库记录，MCP 位置目前固定“本机”，“同步时间”只是客户端查询时间。后端未配置 Qdrant 时自动记忆与记忆召回不可用，但基本对话不依赖它们；工作区目录统一修复尚待实际进程复验。
+- 诊断导出不读取钥匙串令牌，但连接名称/URL 可含用户自填敏感内容，`redact` 只匹配有限标记。连接切换会清选择和查询缓存并重挂载页面，但不等于 Rust IPC/订阅全部取消；快速切换与迟到回调尚未验证。
 
-### G1.5 — 设计系统与桌面 Shell
+证据入口：[Shell](../desktop/src/app/shell/)、[运行投影](../desktop/src/features/runs/projection.ts)、[Rust 流桥接](../desktop/src-tauri/src/commands/stream.rs)、[审批记录](../desktop/src/features/approvals/decisions.ts)、[审批门/风险派生](../harness/security/approvals.py)、[审批决策/历史路由](../harness/routes/chat.py)、[产物页](../desktop/src/pages/artifacts/index.tsx)、[能力目录](../desktop/src/features/capabilities/useCapabilities.ts)、[系统命令](../desktop/src-tauri/src/commands/system.rs)。
 
-目标：先建立所有页面共享的稳定外壳。
+验证记录：前端 `npm run build` 与 `npm test` 通过（4 个用例，主包约 573 kB）；Tauri 配置 JSON 解析通过。后端本轮 40 个 Python 回归测试、`ruff` F/I 检查、语法编译及 `git diff --check` 通过，覆盖无 Qdrant 的回答落库、向量故障降级、工作区 Shell 执行与越界拒绝。`npm run lint` 因工作区未安装 `eslint` 无法执行。上次 `cargo test --locked --offline` 通过（Rust 3 个用例），但不覆盖当前工作区改动。审批多卡真实交互、IPC、窗口截图及后端重启后的真实 SSE 请求未运行；真机联调暂不可用。运行 Cargo 前须 `source ~/.cargo/env`；按用户要求，Windows 重新编译由用户执行。
 
-- 扩展颜色、排版、间距、层级、动效和响应式 token。
-- 实现标题栏、58 px 全局导航、上下文侧栏、主工作区和可关闭详情面板。
-- 建立模块级布局状态：侧栏筛选、最近选择、详情开关和窗口断点。
-- 补齐通用状态组件与键盘焦点样式。
-- 为六个模块提供与定稿一致的静态数据骨架。
+## 3. 下一步
 
-完成条件：
+1. 先重启后端并复验无 Qdrant 的基本对话能落库、正常发出 SSE 收尾事件，检查工作区工具默认目录和相对路径；再复验 Windows 回答详情 IPC 修复。真实后端稳定后检查登录、停止、断线/重连及连接快速切换，并完成三档窗口、键盘和主题验收。
+2. G3 后端审批风险/范围/影响、decision id 与服务端历史契约已落地；本地补齐了内存乐观记录、旧存储清理、多卡独立提交与审计失败提示。后端问题解决后再真机联调该契约；补过期历史、审计失败持久补偿、产物关联与 Rust 安全导出。
+3. 校正 G4 能力的依赖就绪、运行位置和后端 last_sync；验收诊断脱敏与连接隔离，接入通知、签名更新和版本兼容提示。
+4. 补 G5 单元/组件/Tauri E2E 与 Python 回归；完成可访问性、长会话和性能检查，以及 macOS 首发安装/升级/回滚、Windows/Linux 兼容矩阵和发布清单签字。
 
-- 六个模块可切换，结构与 GUI 规范一致。
-- 1280 × 720、1100 × 680、960 × 640 三档截图验收通过。
-- 深浅主题、键盘导航和减少动态效果可走查。
+## 4. 交付规则
 
-### G2 — 对话与运行闭环
+契约优先级：Chat stream → Run snapshot/event/cancel → Approval risk/decision/expiry → Artifact source/preview/export → Capability availability/dependency/last_sync。每阶段按“契约与 mock → GUI 状态 → Rust 接入 → 真实后端联调 → build/test、截图和安全边界复核”交付；视觉变更回写 GUI 规范，协议变更更新四层契约。
 
-目标：让一次对话的执行过程可以实时观察、停止并恢复。
-
-- 将后端事件归一化为消息、阶段、工具调用、用量和产物引用 view model。
-- 对话页实现步骤卡、工具事件、错误恢复和输入器状态机。
-- Runs 页实现列表、状态/时间筛选、详情时间线和 Agent 层级。
-- 接入 `run_subscribe`、sequence 去重、断线重连和 capability 降级。
-- 支持从对话跳转到运行，从运行回到来源会话。
-
-完成条件：
-
-- 流式文本顺序稳定；停止、断线和重连不会产生重复消息。
-- 运行状态与后端 snapshot/replay 结果一致。
-- 不支持 snapshot/replay 的服务器显示明确降级状态。
-
-### G3 — 审批与产物闭环
-
-目标：完成 Human-in-the-loop 与任务输出管理。
-
-- Approvals 页接入全局待处理队列、详情、批准、拒绝和过期状态。
-- 审批操作增加 request id，防止重复提交。
-- Artifacts 页接入列表、来源追踪、受控预览与安全导出。
-- 建立 Chat / Run / Approval / Artifact 间的双向跳转。
-- 文件导出只通过 Rust Core 和系统路径选择器完成。
-
-完成条件：
-
-- 审批卡完整展示风险、范围和影响；结果可追溯。
-- 重连后待审批项不丢失、不重复处理。
-- 导出能力不可用时不会显示可执行假入口。
-
-### G4 — 能力与设置
-
-目标：让用户看懂当前客户端能够做什么，以及能力来自哪里。
-
-- Capabilities 页接入 Agent、Skill、MCP、Knowledge 和执行环境目录。
-- 展示来源、可用状态、依赖、同步时间和失败原因。
-- Settings 页完成连接、外观、通知、快捷键、更新、诊断和关于。
-- 补齐远程 HTTPS 校验、连接测试、版本兼容提示和安全诊断导出。
-
-完成条件：
-
-- 页面只展示后端声明或本机确实可用的能力。
-- 凭据不进入 WebView、日志、剪贴板或诊断包。
-- 连接切换后所有查询、订阅和缓存按 connection id 隔离。
-
-### G5 — 质量与发布
-
-目标：达到可持续交付的桌面产品质量。
-
-- 单元测试覆盖事件归一化、状态机、权限与脱敏边界。
-- 组件测试覆盖发送、停止、审批、导出和连接切换。
-- Tauri 端到端测试覆盖登录、聊天、重启恢复和断线恢复。
-- 执行可访问性、性能、内存与长会话稳定性检查。
-- 配置签名、自动更新、平台安装包和发布说明。
-
-完成条件：
-
-- TypeScript build、Rust test、Python 相关回归与端到端测试全部通过。
-- macOS 首发包可安装、可升级、可回滚；Windows/Linux 进入兼容验证矩阵。
-- 发布清单中的安全、隐私、诊断和恢复项全部签字确认。
-
-## 4. 推荐代码结构
-
-```text
-desktop/src/
-  app/shell/             # 标题栏、全局导航、上下文侧栏、详情面板
-  components/desktop/    # 定稿通用组件
-  features/chat/         # 对话状态机与事件投影
-  features/runs/         # 运行查询、订阅与视图模型
-  features/approvals/    # 审批队列与操作
-  features/artifacts/    # 产物预览与导出
-  features/capabilities/ # 能力目录
-  features/settings/     # 客户端设置
-  contracts/             # IPC / REST / event 契约
-  ipc/                   # Tauri invoke、Channel 与 browser mock
-  styles/                # tokens、基础样式、动效
-```
-
-页面文件只负责编排布局；数据获取和业务状态进入对应 `features/`，跨模块选择状态进入小型 Zustand store，服务端状态继续由 TanStack Query 管理。
-
-## 5. 契约优先级
-
-实施前按以下顺序冻结或补齐契约：
-
-1. Chat stream：`session`、`text_delta`、阶段、工具、用量、错误、关闭原因。
-2. Run：summary、snapshot、sequence event、cancel capability。
-3. Approval：request、scope、risk、status、decision、expiry。
-4. Artifact：metadata、source refs、preview capability、export capability。
-5. Capability：kind、source、availability、dependency、last_sync。
-
-契约新增需同步更新：Python schema、Rust DTO/command、TypeScript 类型和 browser mock。字段兼容使用显式 alias，不在 UI 层猜测多种格式。
-
-## 6. 测试与评审节奏
-
-每个阶段按同一顺序交付：
-
-1. 契约与 mock。
-2. 静态 GUI 与全部页面状态。
-3. Rust Core 接入。
-4. 真实后端联调。
-5. build/test、窗口截图与安全边界复核。
-
-每个阶段使用独立提交，提交信息包含阶段号。视觉变更必须回写 GUI 定稿规范；协议变更必须同时更新四层契约。
-
-## 7. 非目标
-
-- 不在桌面端复制后端 Agent 编排逻辑。
-- 不让 WebView 直接请求任意后端或持有 JWT。
-- 不在首版实现 Web 管理后台的全部配置功能。
-- 不为尚未声明的服务器能力制作可操作的假界面。
-- 不在本 Plan 中引入移动端布局或多窗口工作区。
+首版不实现 Web 管理后台全部配置、移动端布局或多窗口工作区；未声明的能力不做可操作的假入口。

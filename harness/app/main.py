@@ -3,6 +3,7 @@
 import asyncio
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,12 +34,26 @@ from harness.routes import (
 )
 
 
+def ensure_workspace() -> Path:
+    """给文件工具和实体 provider 准备同一个实际存在的工作目录。"""
+    workspace = Path(get_settings().workspace_dir)
+    for directory in (workspace, workspace / "agents", workspace / "skills"):
+        directory.mkdir(parents=True, exist_ok=True)
+    return workspace
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.init_db()
     ensure_profile()
     from harness.infra.logging import log
     from harness.tools.mcp import init_mcp_tools, shutdown_mcp
+
+    try:
+        workspace = await asyncio.to_thread(ensure_workspace)
+        log.info("workspace.ready", root=str(workspace))
+    except OSError as exc:
+        log.warning("workspace.unavailable", error=str(exc)[:200])
 
     # ②′ 务实版崩溃续跑：把上次崩在半路的轮（末条是 user 的会话）标记为已中断。fail-open。
     try:
@@ -213,12 +228,20 @@ def run() -> None:
     import uvicorn
 
     settings = get_settings()
+    # 证书+私钥都配置才启用 HTTPS；开发期未配置时使用 HTTP。
+    ssl_kwargs: dict[str, str] = {}
+    if settings.ssl_certfile and settings.ssl_keyfile:
+        ssl_kwargs = {
+            "ssl_certfile": settings.ssl_certfile,
+            "ssl_keyfile": settings.ssl_keyfile,
+        }
     uvicorn.run(
         "harness.app.main:app",
         host=settings.api_host,
         port=settings.api_port,
         reload=False,
         access_log=False,
+        **ssl_kwargs,
     )
 
 

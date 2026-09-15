@@ -6,9 +6,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from harness.agents.provider import AgentProvider
 from harness.contracts.base import BaseFileProvider
 from harness.contracts.protocol import EntityProvider
+from harness.infra.settings import get_settings
 from harness.skills.provider import SkillProvider
 
 _CLASSES: dict[str, type[BaseFileProvider]] = {"agent": AgentProvider, "skill": SkillProvider}
@@ -16,11 +19,13 @@ _instances: dict[str, BaseFileProvider] = {}
 
 
 def get_provider(kind: str) -> EntityProvider:
-    if kind not in _instances:
-        cls = _CLASSES.get(kind)
-        if cls is None:
-            raise ValueError(f"unknown provider kind: {kind!r}（仅 'agent' | 'skill'）")
-        p = cls()
+    cls = _CLASSES.get(kind)
+    if cls is None:
+        raise ValueError(f"unknown provider kind: {kind!r}（仅 'agent' | 'skill'）")
+    s = get_settings()
+    root = s.agents_dir if kind == "agent" else s.skills_dir
+    if kind not in _instances or _instances[kind].root != Path(root):
+        p = cls(root)
         p.reload()
         _instances[kind] = p
     return _instances[kind]

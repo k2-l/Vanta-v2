@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { AlertTriangle, FileText, FileWarning, Package } from "lucide-react";
+import { Button } from "@/components/Button";
 import {
   ModuleLayout,
   ContextRail,
@@ -13,12 +14,15 @@ import {
   EmptyState,
   LoadingState,
   OfflineState,
+  ErrorState,
+  ForbiddenState,
   type ArtifactPreviewModel,
 } from "@/components/desktop";
 import { useUi } from "@/stores/ui";
 import { useConnection } from "@/stores/connection";
 import { formatBytes, formatRelative } from "@/lib/format";
 import type { ArtifactWire } from "@/contracts/resources";
+import { toClientError } from "@/contracts/errors";
 import {
   isSecret,
   kindLabel,
@@ -90,6 +94,9 @@ export function ArtifactsPage() {
         offline ? <OfflineState /> : <EmptyState icon={Package} title="连接后查看产物" hint="产物由 agent 的 board 工具产出。" />
       ) : artifacts.isLoading ? (
         <LoadingState title="加载产物…" />
+      ) : artifacts.isError ? (
+        toClientError(artifacts.error).kind === "forbidden" ? <ForbiddenState title="无权限查看产物" /> :
+        <ErrorState title="产物加载失败" hint={toClientError(artifacts.error).message} action={<Button size="sm" onClick={() => artifacts.refetch()}>重试</Button>} />
       ) : items.length === 0 ? (
         <EmptyState icon={Package} title="没有该类型的产物" hint="切换左侧类型筛选，或等待 agent 产出。" />
       ) : (

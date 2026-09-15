@@ -147,3 +147,25 @@ npm run tauri:build   # 打包
 - 审批/产物富化：审批请求携带显式风险/范围/影响；artifact 导出走 Rust Core 安全路径选择。
 - run_subscribe / approvals 升级为 WS 实时（`/ws/chat/{id}`）替代轮询。
 - 补 ESLint 配置与前端交互测试。
+
+## 当前 HTTP 联调
+
+开发期允许本机及远程 HTTP，当前后端配置的证书/私钥项已注释。
+重启 `uv run harness-api` 后，桌面端新建连接 `http://10.1.1.2:8765`，测试、保存并激活；
+HTTP 不需要 CA 证书。已有 HTTPS 连接不会自动改写。
+
+Windows 客户端需重新编译。当前 Linux 交叉编译环境命令（由用户执行）：
+
+```bash
+cd /root/Vanta-v2/desktop
+source ~/.cargo/env
+export PATH="/root/.local/bin:/usr/lib/llvm-19/bin:$PATH"
+export XWIN_ARCH=x86_64
+export XWIN_CACHE_DIR=/tmp/vanta-windows-xwin
+export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS='-C target-feature=+crt-static'
+CARGO_BUILD_JOBS=2 npm run tauri -- build --runner cargo-xwin --target x86_64-pc-windows-msvc --no-bundle -- --locked
+```
+
+程序输出：`desktop/target/x86_64-pc-windows-msvc/release/vanta-desktop.exe`。
+需要运行 Rust 回归时，在加载上述 Rust 环境后执行 `cargo test --locked --offline`。
+上线前配置正确的服务器证书、修复系统信任库接入并恢复生产 HTTPS 策略。

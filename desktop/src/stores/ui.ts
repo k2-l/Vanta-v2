@@ -61,6 +61,8 @@ interface UiState {
   toggleDetail: (module: ModuleId) => void;
   setFilter: (module: ModuleId, filter: string | null) => void;
   select: (module: ModuleId, id: string | null) => void;
+  /** 连接切换时清空各模块的对象选择（selectedId 指向具体连接的资源，不可跨连接沿用）。 */
+  resetSelections: () => void;
 }
 
 export const useUi = create<UiState>((set) => ({
@@ -81,4 +83,10 @@ export const useUi = create<UiState>((set) => ({
     set((s) => ({ modules: { ...s.modules, [module]: { ...s.modules[module], filter } } })),
   select: (module, id) =>
     set((s) => ({ modules: { ...s.modules, [module]: { ...s.modules[module], selectedId: id } } })),
+  resetSelections: () =>
+    set((s) => ({
+      modules: Object.fromEntries(
+        (Object.keys(s.modules) as ModuleId[]).map((id) => [id, { ...s.modules[id], selectedId: null }]),
+      ) as Record<ModuleId, ModuleState>,
+    })),
 }));

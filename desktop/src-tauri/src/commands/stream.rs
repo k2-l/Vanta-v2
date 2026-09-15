@@ -46,14 +46,11 @@ pub async fn chat_start(
     }
 
     let base_url = state.connections.resolve_base_url(&connection_id)?;
+    let ca = state.connections.resolve_ca(&connection_id);
     let token = credentials::read_token(&connection_id)?
         .ok_or_else(|| ClientError::new(ErrorKind::Unauthorized, "未登录", false))?;
-    let response = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(6))
-        // 对话流可能持续很久，只给建连限时，不设整体请求超时。
-        .user_agent("Vanta-Desktop/0.0.0")
-        .build()
-        .map_err(ClientError::from)?
+    // 对话流可能持续很久，只给建连限时，不设整体请求超时（overall_timeout=None）。
+    let response = backend_gateway::build_client(ca.as_deref(), None)?
         .post(format!("{base_url}/chat"))
         .bearer_auth(token)
         .header("X-Client-Request-Id", client_request_id)
@@ -135,14 +132,10 @@ pub async fn run_subscribe(
     on_event: Channel<StreamPacket>,
 ) -> CmdResult<StreamHandle> {
     let base_url = state.connections.resolve_base_url(&connection_id)?;
+    let ca = state.connections.resolve_ca(&connection_id);
     let token = credentials::read_token(&connection_id)?
         .ok_or_else(|| ClientError::new(ErrorKind::Unauthorized, "未登录", false))?;
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(6))
-        .timeout(std::time::Duration::from_secs(20))
-        .user_agent("Vanta-Desktop/0.0.0")
-        .build()
-        .map_err(ClientError::from)?;
+    let client = backend_gateway::build_client(ca.as_deref(), Some(std::time::Duration::from_secs(20)))?;
 
     let handle_id = uuid::Uuid::new_v4().to_string();
     let channel_id = on_event.id();

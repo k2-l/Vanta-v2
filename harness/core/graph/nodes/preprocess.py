@@ -13,7 +13,11 @@ import re
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 
-from harness.core.capabilities.memory import _merge_memories, recall_as_context
+from harness.core.capabilities.memory import (
+    _merge_memories,
+    automatic_memory_available,
+    recall_as_context,
+)
 from harness.core.context.budget import BudgetExceeded, check_budget
 from harness.core.context.builder import load_and_build as _load_l1
 from harness.core.context.builder import load_dep_context as _load_deps
@@ -101,7 +105,7 @@ async def preprocess_node(state: PenAgentState, config: RunnableConfig) -> dict:
     profile = state.get("profile") or ""  # runtime.py 在 initial_state 里已加载
 
     # ── 记忆召回（query 相关）+ L1 清单注入（全部已启用）───────────────
-    if user_query:
+    if user_query and automatic_memory_available(s):
         sub_queries: list[str] = [user_query]
         clauses = [c.strip() for c in _CLAUSE_SPLIT_RE.split(user_query) if c.strip()]
         for c in clauses[:2]:

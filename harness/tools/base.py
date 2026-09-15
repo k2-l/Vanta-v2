@@ -51,9 +51,23 @@ class Tool(ABC):
     # 见 harness/infra/approvals.py）。默认 False：现有工具均不受影响。
     requires_approval: bool = False
     approval_message: str = "确认执行工具 {tool_name}？"
+    # 风险等级：审批 UI 的权威风险信号（critical|high|medium|low）。
+    # 空串 = 由审批门按 category 派生（见 harness/security/approvals.classify_risk）；
+    # 工具可显式覆盖以精确标注（如破坏性操作设 "critical"）。
+    risk_level: str = ""
 
     @abstractmethod
     async def run(self, **kwargs: Any) -> ToolResult: ...
+
+    def approval_context(self, tool_input: dict[str, Any]) -> dict[str, str]:
+        """审批展示上下文的工具级提取规则（HITL 卡片的 对象/范围/影响）。
+
+        默认返回空 dict——由审批门（harness/security/approvals）按通用入参键派生
+        target、按执行环境派生 scope、按风险等级派生 impact。需要精确描述的工具
+        （如主动扫描要区分单主机 vs 网段）可覆盖本方法，返回 target/scope/impact
+        任意子集；未提供的键仍走审批门的通用派生。
+        """
+        return {}
 
     def to_anthropic(self) -> dict[str, Any]:
         """转成 Anthropic Messages API 的 tools 项格式。"""

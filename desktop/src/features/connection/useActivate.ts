@@ -2,16 +2,24 @@
  * 激活连接 + 登录——把结果写入全局连接状态（Zustand），凭据留在 Rust。
  */
 
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ipc } from "@/ipc/client";
 import { useConnection } from "@/stores/connection";
+import { useUi } from "@/stores/ui";
 import { DEFAULT_CAPABILITIES } from "@/contracts/connection";
 import { toClientError } from "@/contracts/errors";
 
 export function useActivateConnection() {
   const store = useConnection();
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (id: string) => {
+      // 连接隔离（规范 §4.6 / G4）：切到不同连接前，清空跨连接不可沿用的对象选择，
+      // 并移除上一连接的缓存查询与在途订阅，避免旧数据/选择泄漏到新连接。
+      if (store.activeConnectionId && store.activeConnectionId !== id) {
+        useUi.getState().resetSelections();
+        queryClient.removeQueries();
+      }
       store.setActive(id);
       store.setStatus("testing");
       const session = await ipc("connection_activate", { id });

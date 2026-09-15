@@ -17,7 +17,7 @@ import structlog
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.errors import GraphRecursionError
 
-from harness.core.capabilities.memory import remember
+from harness.core.capabilities.memory import automatic_memory_available, remember
 from harness.core.capabilities.services import maybe_generate_title
 from harness.core.context.summarize import _extract_text
 from harness.core.context.usage import _get_price_table, tracker
@@ -106,6 +106,14 @@ def _spawn_background(coro) -> None:
     task.add_done_callback(_BACKGROUND_TASKS.discard)
 
 
+async def _remember_best_effort(text: str, session_id: str) -> None:
+    """向量记忆故障不能使已经生成的回答或 SSE 收尾失败。"""
+    try:
+        await asyncio.to_thread(remember, text, session_id=session_id, role="assistant")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("memory.auto_write_failed", error=str(exc)[:200], session_id=session_id)
+
+
 # 所有模式已是小写，匹配时无需 .lower()
 _MEMORY_SKIP_PATTERNS = (
     "好的",
@@ -153,6 +161,23 @@ def _filter_memory(text: str) -> str:
     if count_tokens(stripped) > _MEMORY_TOKEN_LIMIT:
         return truncate_to_tail_tokens(stripped, _MEMORY_TAIL_TOKENS)
     return stripped
+
+
+async def _persist_answer(
+    session_id: str,
+    final_text: str,
+    user_message: str,
+    terminal_error: str | None,
+    settings,
+) -> None:
+    """回答落库为必需；自动记忆可用时并行写入，但不得使回答失败。"""
+    tasks = [db.append_message(session_id, "assistant", final_text)]
+    if automatic_memory_available(settings):
+        answer = _filter_memory(final_text)
+        if answer and not terminal_error and not final_text.startswith("任务已停止："):
+            summary = f"Q: {user_message[:200]}\nA: {answer}"
+            tasks.append(_remember_best_effort(summary, session_id))
+    await asyncio.gather(*tasks)
 
 
 def _validate_graph_depth(s) -> None:
@@ -704,17 +729,7 @@ class AgentRuntime:
 
         # 5. 持久化 + 记忆（并行）+ 标题（fire-and-forget）
         if final_text.strip():
-            _answer = _filter_memory(final_text)
-            # DB 消息写入与向量记忆写入完全独立，并行执行节省一次 RTT
-            persist_tasks: list = [db.append_message(session_id, "assistant", final_text)]
-            if _answer and not _terminal_error and not final_text.startswith("任务已停止："):
-                _qa_summary = f"Q: {user_message[:200]}\nA: {_answer}"
-                persist_tasks.append(
-                    asyncio.to_thread(
-                        remember, _qa_summary, session_id=session_id, role="assistant"
-                    )
-                )
-            await asyncio.gather(*persist_tasks)
+            await _persist_answer(session_id, final_text, user_message, _terminal_error, s)
 
             async def _gen_title() -> None:
                 try:

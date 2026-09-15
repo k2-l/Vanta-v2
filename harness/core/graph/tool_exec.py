@@ -18,7 +18,13 @@ from harness.core.foundation.errors import classify_error
 from harness.infra.logging import log
 from harness.infra.metrics import inc as _inc
 from harness.infra.settings import get_settings
-from harness.security.approvals import request_approval
+from harness.security.approvals import (
+    classify_risk,
+    describe_impact,
+    describe_scope,
+    describe_target,
+    request_approval,
+)
 from harness.security.audit_agent import audit_review
 from harness.security.permissions import active_policy, evaluate
 from harness.security.redaction import redact
@@ -175,12 +181,32 @@ async def execute_tool_core(
                     logs.append(f"← {tool_name}: ✗ (审计拒绝: {comment[:60]})")
                     return content, error_code, error_str, flags, logs
                 logs.append(f"← {tool_name}: 审计放行 ({comment[:60]})")
-            elif not await request_approval(session_id, tool_name, approval_msg):
-                error_code = "APPROVAL_REJECTED"
-                content = f"[CANCELLED] 工具 {tool_name!r} 的执行已被拒绝或超时未审批"
-                error_str = f"{tool_name}: approval rejected/timeout"
-                logs.append(f"← {tool_name}: ✗ (审批拒绝/超时)")
-                return content, error_code, error_str, flags, logs
+            else:
+                # 阻塞式人工审批：派生风险/对象/范围/影响，供 HITL 卡片如实展示（规范 §4.3）。
+                # 工具可通过 approval_context 提供精确规则，未提供的键走通用派生。
+                level, risk_source = classify_risk(tool.category, tool.risk_level)
+                ctx = tool.approval_context(tool_input)
+                approved = await request_approval(
+                    session_id,
+                    tool_name,
+                    approval_msg,
+                    risk=level,
+                    risk_source=risk_source,
+                    target=ctx.get("target") or describe_target(tool_input),
+                    scope=ctx.get("scope")
+                    or describe_scope(
+                        kind=xenv.kind,
+                        container_id=xenv.container_id,
+                        engagement_id=xenv.engagement_id,
+                    ),
+                    impact=ctx.get("impact") or describe_impact(level),
+                )
+                if not approved:
+                    error_code = "APPROVAL_REJECTED"
+                    content = f"[CANCELLED] 工具 {tool_name!r} 的执行已被拒绝或超时未审批"
+                    error_str = f"{tool_name}: approval rejected/timeout"
+                    logs.append(f"← {tool_name}: ✗ (审批拒绝/超时)")
+                    return content, error_code, error_str, flags, logs
 
         async with sem:
             result = await asyncio.wait_for(tool.run(**tool_input), timeout=timeout)

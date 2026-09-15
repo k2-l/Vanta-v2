@@ -2,7 +2,7 @@
 //!
 //! - profile 为非敏感数据，持久化到 app data 目录的 JSON 文件；
 //! - 凭据不在此模块，见 `credentials`；
-//! - baseUrl 保存前标准化 scheme/host/port/path，并默认拒绝明文远程 HTTP（loopback 例外）。
+//! - baseUrl 保存前标准化 scheme/host/port/path；开发联调允许本机及远程 HTTP，上线使用 HTTPS。
 
 use crate::error::{ClientError, CmdResult, ErrorKind};
 use serde::{Deserialize, Serialize};
@@ -30,6 +30,10 @@ pub struct ConnectionProfile {
     pub base_url: String,
     #[serde(default)]
     pub tls_policy: TlsPolicy,
+    /// custom_ca 策略下的 CA 证书文件路径（PEM）；供 reqwest 追加信任根，
+    /// 免去把自签证书装进系统信任库。仅在 tls_policy=custom_ca 时生效。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_cert_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_connected_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -45,6 +49,8 @@ pub struct ConnectionDraft {
     pub base_url: String,
     #[serde(default)]
     pub tls_policy: Option<TlsPolicy>,
+    #[serde(default)]
+    pub ca_cert_path: Option<String>,
 }
 
 /// 标准化并校验后端地址。返回规整后的 `scheme://host[:port][/path]`（去尾斜杠）。
@@ -57,15 +63,8 @@ pub fn normalize_base_url(raw: &str) -> CmdResult<String> {
         .map_err(|_| ClientError::validation("后端地址格式非法（需含 scheme，如 http:// 或 https://）"))?;
 
     match url.scheme() {
-        "https" => {}
-        "http" => {
-            // 明文 HTTP 仅允许本机 loopback（开发例外），远程默认拒绝（方案 §9.1）。
-            let host = url.host_str().unwrap_or_default();
-            let is_loopback = host == "localhost" || host == "127.0.0.1" || host == "::1";
-            if !is_loopback {
-                return Err(ClientError::validation("拒绝明文远程 HTTP，请使用 HTTPS（本机 loopback 除外）"));
-            }
-        }
+        // 开发联调允许远程 HTTP；HTTPS 仍使用原有证书校验。
+        "http" | "https" => {}
         other => return Err(ClientError::validation(format!("不支持的 scheme: {other}"))),
     }
 
@@ -135,11 +134,18 @@ impl ConnectionStore {
         let profile = match draft.id.as_ref().and_then(|id| guard.iter().position(|c| &c.id == id)) {
             Some(idx) => {
                 let existing = &guard[idx];
+                let tls_policy = draft.tls_policy.unwrap_or(existing.tls_policy);
+                // 草稿未带 ca_cert_path 时沿用旧值；切回 system 策略则清空。
+                let ca_cert_path = match tls_policy {
+                    TlsPolicy::CustomCa => draft.ca_cert_path.or_else(|| existing.ca_cert_path.clone()),
+                    TlsPolicy::System => None,
+                };
                 let updated = ConnectionProfile {
                     id: existing.id.clone(),
                     label: if draft.label.is_empty() { existing.label.clone() } else { draft.label },
                     base_url,
-                    tls_policy: draft.tls_policy.unwrap_or(existing.tls_policy),
+                    tls_policy,
+                    ca_cert_path,
                     last_connected_at: existing.last_connected_at.clone(),
                     last_known_version: existing.last_known_version.clone(),
                 };
@@ -147,11 +153,17 @@ impl ConnectionStore {
                 updated
             }
             None => {
+                let tls_policy = draft.tls_policy.unwrap_or_default();
+                let ca_cert_path = match tls_policy {
+                    TlsPolicy::CustomCa => draft.ca_cert_path,
+                    TlsPolicy::System => None,
+                };
                 let profile = ConnectionProfile {
                     id: uuid::Uuid::new_v4().to_string(),
                     label: if draft.label.is_empty() { base_url.clone() } else { draft.label },
                     base_url,
-                    tls_policy: draft.tls_policy.unwrap_or_default(),
+                    tls_policy,
+                    ca_cert_path,
                     last_connected_at: None,
                     last_known_version: None,
                 };
@@ -186,6 +198,16 @@ impl ConnectionStore {
             .map(|c| c.base_url)
             .ok_or_else(|| ClientError::new(ErrorKind::NotFound, "连接不存在", false))
     }
+
+    /// 仅 HTTPS + custom_ca 返回证书路径；HTTP 忽略历史 TLS 配置。
+    pub fn resolve_ca(&self, id: &str) -> Option<String> {
+        self.get(id)
+            .filter(|c| c.base_url.starts_with("https://"))
+            .and_then(|c| match c.tls_policy {
+                TlsPolicy::CustomCa => c.ca_cert_path,
+                TlsPolicy::System => None,
+            })
+    }
 }
 
 fn now_iso() -> String {
@@ -195,4 +217,51 @@ fn now_iso() -> String {
         .unwrap_or_default()
         .as_secs();
     format!("@{now}") // 占位：G1 引入 time crate 后替换为标准 RFC3339
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_remote_http_for_development() {
+        assert_eq!(
+            normalize_base_url(" http://10.1.1.2:8765/ ").unwrap(),
+            "http://10.1.1.2:8765"
+        );
+    }
+
+    #[test]
+    fn retains_https_and_rejects_other_protocols() {
+        assert_eq!(
+            normalize_base_url("https://backend.example.test/api/").unwrap(),
+            "https://backend.example.test/api"
+        );
+        assert!(normalize_base_url("ftp://backend.example.test").is_err());
+        assert!(normalize_base_url("").is_err());
+    }
+
+    #[test]
+    fn http_ignores_saved_ca_but_https_retains_it() {
+        let http = ConnectionProfile {
+            id: "http".into(),
+            label: "Development".into(),
+            base_url: "http://10.1.1.2:8765".into(),
+            tls_policy: TlsPolicy::CustomCa,
+            ca_cert_path: Some("old-certificate.pem".into()),
+            last_connected_at: None,
+            last_known_version: None,
+        };
+        let https = ConnectionProfile {
+            id: "https".into(),
+            base_url: "https://10.1.1.2:8765".into(),
+            ..http.clone()
+        };
+        let store = ConnectionStore {
+            path: PathBuf::new(),
+            inner: Mutex::new(vec![http, https]),
+        };
+        assert_eq!(store.resolve_ca("http"), None);
+        assert_eq!(store.resolve_ca("https").as_deref(), Some("old-certificate.pem"));
+    }
 }

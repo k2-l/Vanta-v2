@@ -16,8 +16,8 @@
         "title": "Vanta",
         "width": 1240,
         "height": 820,
-        "minWidth": 880,
-        "minHeight": 600,
+        "minWidth": 960,
+        "minHeight": 640,
         "resizable": true,
         "fullscreen": false
       }

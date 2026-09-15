@@ -14,7 +14,8 @@ pub async fn auth_login(
     password: String,
 ) -> CmdResult<AuthSummary> {
     let base_url = state.connections.resolve_base_url(&connection_id)?;
-    let outcome = backend_gateway::login(&base_url, &connection_id, &password).await?;
+    let ca = state.connections.resolve_ca(&connection_id);
+    let outcome = backend_gateway::login(&base_url, &connection_id, &password, ca.as_deref()).await?;
     // password 在此作用域结束即释放；从不写日志、从不回传前端。
     Ok(AuthSummary {
         authenticated: true,

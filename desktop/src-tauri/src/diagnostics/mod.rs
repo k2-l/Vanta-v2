@@ -1,6 +1,6 @@
 //! 诊断与脱敏（方案 §17、§14.2）。
 //!
-//! 日志中禁止出现 Authorization / token / secret 正文；此处提供结构化脱敏。
+//! 对已知敏感标记做有限脱敏；不能代替分享前的人工检查。
 
 /// 对可能含敏感信息的字符串做粗粒度脱敏（用于日志/诊断包）。
 pub fn redact(input: &str) -> String {
@@ -18,16 +18,6 @@ pub fn redact(input: &str) -> String {
         }
     }
     out
-}
-
-/// 诊断快照——不含任何凭据（方案 §17）。
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Diagnostics {
-    pub app_version: String,
-    pub platform: String,
-    pub active_connection: Option<String>,
-    pub server_version: Option<String>,
 }
 
 #[cfg(test)]

@@ -29,7 +29,8 @@ def _sandbox_path(path: str) -> tuple[Path | None, str | None]:
 
     workspace = Path(workspace_root).resolve()
     try:
-        target = Path(path).resolve(strict=False)
+        requested = Path(path).expanduser()
+        target = (requested if requested.is_absolute() else workspace / requested).resolve(strict=False)
     except (OSError, ValueError, RuntimeError):
         return None, "路径无效"
 

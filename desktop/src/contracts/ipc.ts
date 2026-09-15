@@ -47,8 +47,14 @@ export type ApiOperation =
   | { op: "sessions.phases"; sessionId: string }
   | { op: "approvals.list" }
   | { op: "approvals.decide"; callId: string; approved: boolean }
+  | { op: "approvals.history"; limit?: number }
   | { op: "artifacts.list"; kind?: string }
-  | { op: "budget.get"; sessionId: string };
+  | { op: "budget.get"; sessionId: string }
+  | { op: "capabilities.agents" }
+  | { op: "capabilities.skills" }
+  | { op: "capabilities.mcp" }
+  | { op: "capabilities.knowledge" }
+  | { op: "capabilities.containers" };
 
 /** 流句柄——chat_start / run_subscribe 返回，用于 stream_stop。 */
 export type StreamHandle = {
@@ -64,6 +70,8 @@ export type ExportResult = {
 
 export type UpdateInfo = {
   available: boolean;
+  /** 是否已接入签名更新渠道；false 时前端如实说明"尚未接入"而非"已是最新版本"。 */
+  configured?: boolean;
   version?: string;
   notes?: string;
 };

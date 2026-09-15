@@ -30,6 +30,8 @@ workspace/                              Agent / Skill / Knowledge 文件
 ## 快速启动
 
 配置集中在 `data/config.toml`（填写 `[anthropic] api_key`、`[auth] password/secret`、`[database] url` 等）。
+基本对话只依赖模型服务和 PostgreSQL；Qdrant 是知识库与可选长期记忆的向量服务，
+未配置 `[qdrant]` 时自动记忆/召回会跳过，不影响回答落库和 SSE 完成。
 
 ```bash
 # 后端（FastAPI :8765）
@@ -92,4 +94,4 @@ disable-model-invocation: false
 | `[auth] secret` | JWT 签名密钥 |
 | `[database] url` | PostgreSQL DSN |
 | `[models] high/mid/low` | 三档模型（推理 / 默认 / 摘要标题） |
-| `[paths] suite_dir` | workspace 套件根（留空则自动推断 skills/agents 子路径） |
+| `[paths] suite_dir` | workspace 套件根；相对路径按仓库根解析，启动时创建 agents/skills 子目录；留空默认 `workspace/` |

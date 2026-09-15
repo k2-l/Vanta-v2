@@ -9,7 +9,7 @@
 import type { ConnectionProfile, ServerCapabilities } from "@/contracts/connection";
 import type { ChatMessage, SessionSummary } from "@/contracts/chat";
 import type { PhaseSnapshotRow, RunSummaryWire, StreamPacket } from "@/contracts/stream";
-import type { ApprovalWire, ArtifactWire } from "@/contracts/resources";
+import type { ApprovalDecisionRecord, ApprovalWire, ArtifactWire } from "@/contracts/resources";
 import type { IpcContract } from "@/contracts/ipc";
 import type { StartChatArgs } from "./chat";
 import type { RunSubscribeArgs } from "./run";
@@ -23,6 +23,32 @@ const MOCK_CAPS: ServerCapabilities = {
   artifactExport: false,
 };
 
+/** 能力目录 mock——形状对齐后端 /v1/{agents,skills,mcp/servers,knowledge,containers}。 */
+const MOCK_CAPABILITIES = {
+  agents: [
+    { id: "orchestrator", name: "orchestrator", description: "统一安全测试调度器，路由白盒 / 黑盒 / 灰盒", model: "claude-opus-4-8", provider: "anthropic", tools: [], skills: [] },
+    { id: "audit-analyst", name: "audit-analyst", description: "白盒深度分析：数据流追踪与可利用性判定", model: "claude-sonnet-5", provider: "anthropic", tools: [], skills: [] },
+    { id: "pentest-analyst", name: "pentest-analyst", description: "黑盒 / 灰盒渗透，从侦察到后渗透", model: "claude-sonnet-5", provider: "anthropic", tools: [], skills: [] },
+  ],
+  skills: [
+    { id: "passive-recon", name: "passive-recon", description: "被动资产收集与指纹归并", effort: "medium", context: "backend", triggers: [] },
+    { id: "sqlmap-runner", name: "sqlmap-runner", description: "在隔离容器内运行 sqlmap 验证注入", effort: "high", context: "container", triggers: [] },
+  ],
+  mcp: [
+    { name: "filesystem", command: "npx @modelcontextprotocol/server-filesystem", args: [], enabled: true, env_keys: [], status: "connected", error: null, tool_count: 6 },
+    { name: "http-probe", command: "python -m http_probe", args: [], enabled: true, env_keys: [], status: "disconnected", error: null, tool_count: 0 },
+    { name: "legacy-scan", command: "./legacy", args: [], enabled: false, env_keys: [], status: "disconnected", error: null, tool_count: 0 },
+  ],
+  knowledge: [
+    { id: "kb1", name: "evolved-web-vulns", title: "Web 漏洞经验库（蒸馏后模式）", category: "web", content: "", tags: ["xss", "sqli", "idor"] },
+    { id: "kb2", name: "evolved-ad-attacks", title: "AD 横向经验库", category: "infra", content: "", tags: ["kerberos", "ntlm"] },
+  ],
+  containers: [
+    { id: "c1", name: "kali-isolated", image: "kali-rolling", status: "running", managed: true, container_id: "abc123" },
+    { id: "c2", name: "sqlmap-runner", image: "sqlmap:latest", status: "exited", managed: true, container_id: "def456" },
+  ],
+};
+
 const store: {
   connections: ConnectionProfile[];
   authed: Set<string>;
@@ -30,6 +56,7 @@ const store: {
   messages: Record<string, ChatMessage[]>;
   phases: Record<string, PhaseSnapshotRow[]>;
   approvals: ApprovalWire[];
+  decisions: ApprovalDecisionRecord[];
   artifacts: ArtifactWire[];
 } = {
   connections: [
@@ -71,6 +98,11 @@ const store: {
       session_id: "session-mock",
       requested_at: new Date(Date.now() - 2 * 60_000).toISOString(),
       expires_at: new Date(Date.now() + 3 * 60_000).toISOString(),
+      risk: "high",
+      risk_source: "declared",
+      target: "10.2.0.14",
+      scope: "隔离容器 · 授权范围 eng-mock",
+      impact: "将对目标执行主动 / 写入类操作，需明确授权",
     },
     {
       call_id: "apr_d4e5f6",
@@ -79,6 +111,28 @@ const store: {
       session_id: "session-mock",
       requested_at: new Date(Date.now() - 40_000).toISOString(),
       expires_at: new Date(Date.now() + 4 * 60_000).toISOString(),
+      risk: "medium",
+      risk_source: "derived",
+      target: "https://target-api.internal/login",
+      scope: "本机 · 授权范围 eng-mock",
+      impact: "将访问外部资源或写入文件系统",
+    },
+  ],
+  decisions: [
+    {
+      decision_id: "dec_mock01",
+      call_id: "apr_seed01",
+      tool_name: "shell",
+      session_id: "session-mock",
+      decision: "rejected",
+      risk: "high",
+      risk_source: "derived",
+      target: "rm -rf ./build",
+      scope: "本机 · 无活跃 engagement",
+      impact: "可造成破坏性或不可逆操作，务必确认授权范围",
+      message: "确认执行工具 shell？",
+      decided_at: new Date(Date.now() - 18 * 60_000).toISOString(),
+      entry_hash: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
     },
   ],
   artifacts: [
@@ -192,13 +246,21 @@ export async function mockInvoke<C extends keyof IpcContract>(
       return delay(store.connections.slice()) as never;
 
     case "connection_save": {
-      const input = (a?.input ?? {}) as { id?: string; label: string; baseUrl: string; tlsPolicy?: "system" | "custom_ca" };
+      const input = (a?.input ?? {}) as {
+        id?: string;
+        label: string;
+        baseUrl: string;
+        tlsPolicy?: "system" | "custom_ca";
+        caCertPath?: string;
+      };
       const existing = input.id ? store.connections.find((c) => c.id === input.id) : undefined;
+      const tlsPolicy = input.tlsPolicy ?? "system";
       const profile: ConnectionProfile = {
         id: existing?.id ?? uid("conn"),
         label: input.label,
         baseUrl: input.baseUrl.replace(/\/+$/, ""),
-        tlsPolicy: input.tlsPolicy ?? "system",
+        tlsPolicy,
+        caCertPath: tlsPolicy === "custom_ca" ? input.caCertPath : undefined,
         lastConnectedAt: existing?.lastConnectedAt,
         lastKnownVersion: existing?.lastKnownVersion,
       };
@@ -260,11 +322,36 @@ export async function mockInvoke<C extends keyof IpcContract>(
         return delay(store.phases[operation.sessionId ?? ""]?.slice() ?? []) as never;
       }
       if (operation?.op === "approvals.list") return delay(store.approvals.slice()) as never;
+      if (operation?.op === "approvals.history") {
+        return delay(store.decisions.slice()) as never;
+      }
       if (operation?.op === "approvals.decide") {
-        const before = store.approvals.length;
-        store.approvals = store.approvals.filter((ap) => ap.call_id !== operation.callId);
+        const target = store.approvals.find((ap) => ap.call_id === operation.callId);
         // resolve 已处理项返回失败，模拟后端幂等（call_id 已失效）。
-        return delay({ ok: store.approvals.length < before }) as never;
+        if (!target) return delay({ ok: false }) as never;
+        store.approvals = store.approvals.filter((ap) => ap.call_id !== operation.callId);
+        const decision = operation.approved ? "approved" : "rejected";
+        const decisionId = uid("dec");
+        const entryHash = Array.from({ length: 8 }, () => Math.random().toString(16).slice(2, 10)).join("");
+        store.decisions = [
+          {
+            decision_id: decisionId,
+            call_id: target.call_id,
+            tool_name: target.tool_name,
+            session_id: target.session_id,
+            decision,
+            risk: target.risk,
+            risk_source: target.risk_source,
+            target: target.target,
+            scope: target.scope,
+            impact: target.impact,
+            message: target.message,
+            decided_at: new Date().toISOString(),
+            entry_hash: entryHash,
+          },
+          ...store.decisions,
+        ];
+        return delay({ ok: true, decision_id: decisionId, decision, audit_recorded: true, entry_hash: entryHash }) as never;
       }
       if (operation?.op === "artifacts.list") {
         const rows = operation.kind
@@ -272,6 +359,11 @@ export async function mockInvoke<C extends keyof IpcContract>(
           : store.artifacts;
         return delay(rows.slice()) as never;
       }
+      if (operation?.op === "capabilities.agents") return delay(MOCK_CAPABILITIES.agents.slice()) as never;
+      if (operation?.op === "capabilities.skills") return delay(MOCK_CAPABILITIES.skills.slice()) as never;
+      if (operation?.op === "capabilities.mcp") return delay(MOCK_CAPABILITIES.mcp.slice()) as never;
+      if (operation?.op === "capabilities.knowledge") return delay(MOCK_CAPABILITIES.knowledge.slice()) as never;
+      if (operation?.op === "capabilities.containers") return delay(MOCK_CAPABILITIES.containers.slice()) as never;
       return delay({ mock: true, operation }) as never;
     }
 
@@ -283,7 +375,10 @@ export async function mockInvoke<C extends keyof IpcContract>(
     }
 
     case "app_check_update":
-      return delay({ available: false }) as never;
+      return delay({ available: false, configured: false }) as never;
+
+    case "diagnostics_export":
+      return delay({ path: "(mock)/vanta-diagnostics.json", bytes: 512 }) as never;
 
     default:
       return Promise.reject({

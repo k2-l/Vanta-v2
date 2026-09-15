@@ -105,6 +105,14 @@ export function ChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streaming]);
 
+  // 卸载时（含连接切换触发的整体重挂载）停止在途流，避免 Rust 侧订阅泄漏（G4 连接隔离）。
+  useEffect(() => {
+    return () => {
+      const handleId = handleRef.current;
+      if (handleId) void ipc("stream_stop", { handleId });
+    };
+  }, []);
+
   useEffect(() => {
     const state = location.state as { newChat?: boolean } | null;
     if (!state?.newChat) return;

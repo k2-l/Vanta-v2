@@ -47,10 +47,13 @@ def _resolve_cwd(cwd: str | None) -> tuple[str, str | None]:
     if not workspace_dir:
         return "", "安全策略：未配置工作目录"
     ws = Path(workspace_dir).resolve()
+    if not ws.is_dir():
+        return "", f"工作目录不存在：{ws}"
     if not cwd:
         return str(ws), None
     try:
-        target = Path(cwd).expanduser().resolve()
+        requested = Path(cwd).expanduser()
+        target = (requested if requested.is_absolute() else ws / requested).resolve()
         target.relative_to(ws)
     except ValueError:
         return "", f"安全策略：工作目录超出范围：{cwd}"
@@ -86,7 +89,8 @@ async def _exec_command(command: str, cwd: str | None, timeout: float) -> ToolRe
 
     effective_cwd, cwd_error = _resolve_cwd(cwd)
     if cwd_error:
-        return ToolResult(ok=False, output="", error=cwd_error)
+        code = "PERMISSION_DENIED" if cwd_error.startswith("安全策略") else "COMMAND_NOT_FOUND"
+        return ToolResult.fail(error=cwd_error, error_code=code)
 
     proc = await asyncio.create_subprocess_shell(
         command,

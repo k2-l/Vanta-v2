@@ -5,6 +5,7 @@
  */
 
 import type { ReactNode } from "react";
+import { Loader2 } from "lucide-react";
 import { Button } from "@/components/Button";
 import { StatusBadge, type Tone } from "./status";
 import { formatRelative } from "@/lib/format";
@@ -24,7 +25,10 @@ export type ApprovalCardModel = {
   requestedAt: string;
   expiresAt?: string;
   isPending: boolean;
+  /** 已过期（超过 expires_at 仍未处理）：与已归档区分文案，操作同样禁用。 */
+  expired?: boolean;
   selected?: boolean;
+  auditWarning?: string;
 };
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
@@ -45,15 +49,33 @@ export function ApprovalCard({
   onApprove,
   onReject,
   onSelect,
+  submitting = false,
+  error,
 }: {
   model: ApprovalCardModel;
   onApprove?: () => void;
   onReject?: () => void;
   onSelect?: () => void;
+  /** 该卡决策提交中：禁用双按钮并在主按钮显示 spinner。 */
+  submitting?: boolean;
+  /** 决策提交失败原因（含后端返回"已处理/失效"）。 */
+  error?: string;
 }) {
+  const disabled = !model.isPending || submitting;
   return (
     <article
       onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect?.();
+        }
+      }}
+      tabIndex={onSelect ? 0 : undefined}
+      role="group"
+      aria-label={`审批：${model.title}`}
+      aria-current={model.selected}
       className="rounded-[var(--radius-lg)] border p-4 transition-colors"
       style={{
         background: "var(--surface-overlay)",
@@ -83,13 +105,14 @@ export function ApprovalCard({
         <p className="text-[11px]" style={{ color: "var(--fg-subtle)" }}>
           {formatRelative(model.requestedAt)}请求
           {model.expiresAt && model.isPending && ` · ${formatRelative(model.expiresAt)}到期`}
-          {!model.isPending && " · 已归档，不可再次提交"}
+          {model.expired && " · 已过期，不可再次提交"}
+          {!model.isPending && !model.expired && " · 已归档，不可再次提交"}
         </p>
         <div className="flex shrink-0 items-center gap-2">
           <Button
             size="sm"
             variant="dangerGhost"
-            disabled={!model.isPending}
+            disabled={disabled}
             onClick={(e) => {
               e.stopPropagation();
               onReject?.();
@@ -99,16 +122,27 @@ export function ApprovalCard({
           </Button>
           <Button
             size="sm"
-            disabled={!model.isPending}
+            disabled={disabled}
             onClick={(e) => {
               e.stopPropagation();
               onApprove?.();
             }}
           >
+            {submitting && <Loader2 size={14} className="animate-spin" />}
             {model.allowLabel}
           </Button>
         </div>
       </div>
+      {error && (
+        <p className="mt-2 text-[11px]" style={{ color: "var(--danger)" }}>
+          {error}
+        </p>
+      )}
+      {model.auditWarning && (
+        <p className="mt-2 text-[11px] leading-relaxed" style={{ color: "var(--warn)" }} role="status">
+          {model.auditWarning}
+        </p>
+      )}
     </article>
   );
 }

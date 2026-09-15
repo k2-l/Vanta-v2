@@ -8,30 +8,42 @@ import {
   ContentHeader,
   StatusBadge,
   EmptyState,
+  LoadingState,
+  ErrorState,
+  OfflineState,
 } from "@/components/desktop";
+import { Button } from "@/components/Button";
 import { useUi } from "@/stores/ui";
+import { useConnection } from "@/stores/connection";
 import { formatRelative } from "@/lib/format";
+import { useCapabilities } from "@/features/capabilities/useCapabilities";
 import {
   AVAILABILITY,
-  CAPABILITY_ITEMS,
   CAPABILITY_KIND,
   type CapabilityItem,
   type CapabilityKind,
-} from "@/features/capabilities/fixtures";
+} from "@/features/capabilities/model";
 
 const KINDS = Object.keys(CAPABILITY_KIND) as CapabilityKind[];
 
 export function CapabilitiesPage() {
-  const kindFilter = useUi((s) => s.modules.capabilities.filter) ?? "all";
+  const kindFilter = (useUi((s) => s.modules.capabilities.filter) ?? "all") as "all" | CapabilityKind;
   const setFilter = useUi((s) => s.setFilter);
+  const connected = useConnection((s) => Boolean(s.activeConnectionId && s.auth.authenticated));
+  const offline = useConnection((s) => s.status === "offline");
+
+  const query = useCapabilities();
+  const all = query.data?.items ?? [];
+  const failed = query.data?.failed ?? [];
+  const lastSync = query.dataUpdatedAt ? new Date(query.dataUpdatedAt).toISOString() : undefined;
 
   const counts = useMemo(() => {
-    const map: Record<string, number> = { all: CAPABILITY_ITEMS.length };
-    for (const c of CAPABILITY_ITEMS) map[c.kind] = (map[c.kind] ?? 0) + 1;
+    const map: Record<string, number> = { all: all.length };
+    for (const c of all) map[c.kind] = (map[c.kind] ?? 0) + 1;
     return map;
-  }, []);
+  }, [all]);
 
-  const items = CAPABILITY_ITEMS.filter((c) => (kindFilter === "all" ? true : c.kind === kindFilter));
+  const items = all.filter((c) => (kindFilter === "all" ? true : c.kind === kindFilter));
 
   const groups = useMemo(() => {
     const bySource = new Map<string, CapabilityItem[]>();
@@ -63,47 +75,88 @@ export function CapabilitiesPage() {
     </ContextRail>
   );
 
+  const header = (
+    <ContentHeader
+      title="能力"
+      subtitle="只呈现后端已声明或本机确实可用的能力，可用状态来自运行时事实（规范 §4.5）"
+      actions={
+        <span className="text-[11px]" style={{ color: "var(--fg-subtle)" }}>
+          {connected && query.isSuccess ? `共 ${all.length} 项` : null}
+        </span>
+      }
+    />
+  );
+
+  const body = () => {
+    if (!connected) {
+      return offline ? (
+        <OfflineState />
+      ) : (
+        <EmptyState icon={Layers} title="未连接服务器" hint="在设置中激活连接并登录后，此处会列出后端已声明的能力。" />
+      );
+    }
+    if (query.isLoading) return <LoadingState title="正在同步能力目录…" />;
+    if (query.isError) {
+      return (
+        <ErrorState
+          title="能力目录加载失败"
+          hint="无法从后端读取 Agent、技能、MCP、知识库或执行环境目录。"
+          action={
+            <Button variant="secondary" onClick={() => query.refetch()}>
+              重试
+            </Button>
+          }
+        />
+      );
+    }
+    if (all.length === 0) {
+      return <EmptyState icon={Layers} title="后端未声明任何能力" hint="当前连接的后端没有已注册的 Agent、技能、MCP、知识库或执行环境。" />;
+    }
+    if (items.length === 0) {
+      return <EmptyState icon={Layers} title="该分类下没有已声明的能力" hint="切换左侧分类查看其他来源。" />;
+    }
+    return (
+      <div className="min-h-0 flex-1 overflow-y-auto p-5">
+        <div className="mx-auto flex max-w-3xl flex-col gap-6">
+          {failed.length > 0 && (
+            <div
+              className="rounded-[var(--radius-lg)] border px-3 py-2 text-[12px]"
+              style={{ background: "var(--warn-tint)", borderColor: "var(--warn)", color: "var(--warn)" }}
+            >
+              部分来源未能同步：{failed.map((k) => CAPABILITY_KIND[k].label).join("、")}。以下仅展示已成功读取的能力。
+            </div>
+          )}
+          {groups.map(([source, list]) => (
+            <section key={source}>
+              <div className="mb-2 flex items-center justify-between">
+                <h2 className="text-[12px] font-semibold" style={{ color: "var(--fg-muted)" }}>
+                  {source}
+                </h2>
+                <span className="text-[11px]" style={{ color: "var(--fg-subtle)" }}>
+                  {list.length} 项
+                </span>
+              </div>
+              <div className="flex flex-col gap-2">
+                {list.map((cap) => (
+                  <CapabilityRow key={cap.id} cap={cap} lastSync={lastSync} />
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <ModuleLayout module="capabilities" rail={rail}>
-      <ContentHeader
-        title="能力"
-        subtitle="只呈现后端已声明或本机确实可用的能力，不伪装可用（规范 §4.5）"
-        actions={
-          <span className="text-[11px]" style={{ color: "var(--fg-subtle)" }}>
-            共 {items.length} 项
-          </span>
-        }
-      />
-      {items.length === 0 ? (
-        <EmptyState icon={Layers} title="该分类下没有已声明的能力" hint="切换左侧分类查看其他来源。" />
-      ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto p-5">
-          <div className="mx-auto flex max-w-3xl flex-col gap-6">
-            {groups.map(([source, list]) => (
-              <section key={source}>
-                <div className="mb-2 flex items-center justify-between">
-                  <h2 className="text-[12px] font-semibold" style={{ color: "var(--fg-muted)" }}>
-                    {source}
-                  </h2>
-                  <span className="text-[11px]" style={{ color: "var(--fg-subtle)" }}>
-                    {list.length} 项
-                  </span>
-                </div>
-                <div className="flex flex-col gap-2">
-                  {list.map((cap) => (
-                    <CapabilityRow key={cap.id} cap={cap} />
-                  ))}
-                </div>
-              </section>
-            ))}
-          </div>
-        </div>
-      )}
+      {header}
+      {body()}
     </ModuleLayout>
   );
 }
 
-function CapabilityRow({ cap }: { cap: CapabilityItem }) {
+function CapabilityRow({ cap, lastSync }: { cap: CapabilityItem; lastSync?: string }) {
   const Icon = CAPABILITY_KIND[cap.kind].icon;
   const avail = AVAILABILITY[cap.availability];
   return (
@@ -131,7 +184,7 @@ function CapabilityRow({ cap }: { cap: CapabilityItem }) {
           <span>{CAPABILITY_KIND[cap.kind].label}</span>
           {cap.location && <span>运行于 {cap.location}</span>}
           {cap.dependency && <span className="font-mono">依赖 {cap.dependency}</span>}
-          {cap.lastSync && <span>{formatRelative(cap.lastSync)}同步</span>}
+          {lastSync && <span>{formatRelative(lastSync)}同步</span>}
         </div>
       </div>
     </div>

@@ -14,6 +14,13 @@ from typing import Any
 
 from harness.infra import vector
 from harness.infra.logging import log
+from harness.infra.settings import get_settings
+
+
+def automatic_memory_available(settings: Any | None = None) -> bool:
+    """自动记忆是可选增强；未配置向量服务时基本对话照常完成。"""
+    s = settings or get_settings()
+    return bool(s.qdrant_url and s.qdrant_api_key and s.embedding_api_key)
 
 
 def remember(
@@ -77,7 +84,7 @@ def recall_as_context(query: str, *, k: int = 5) -> str:
     挤占名额。故相关性排序后做贪心去近重复：跳过与已选记忆余弦 > 阈值 的候选，用
     存储向量（search_memory with_vectors）算余弦，不额外调 embedding。
     """
-    if not query.strip():
+    if not query.strip() or not automatic_memory_available():
         return ""
     try:
         # 多取 2x 候选（连向量），加权 + 去近重复后截取 top-k

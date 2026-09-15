@@ -1,11 +1,10 @@
 """AgentProvider —— 文件系统 Agent 加载器（实现 EntityProvider）。
 
-数据源: {VANTA_ROOT}/workspace/agents/<name>/AGENT.md
+数据源: settings.agents_dir/<name>/AGENT.md
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from harness.contracts.base import BaseFileProvider
@@ -16,11 +15,11 @@ from harness.contracts.models import (
     EntityMeta,
     normalize_provider_name,
 )
+from harness.infra.settings import get_settings
 
 
 def _agents_root() -> Path:
-    vanta_root = os.getenv("VANTA_ROOT", str(Path.home() / "Vanta"))
-    return Path(vanta_root) / "workspace" / "agents"
+    return Path(get_settings().agents_dir)
 
 
 class AgentProvider(BaseFileProvider):

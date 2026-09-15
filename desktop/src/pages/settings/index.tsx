@@ -105,7 +105,7 @@ function ConnectionSection() {
         className="mt-4 rounded-[var(--radius)] border px-3 py-2 text-[11px] leading-relaxed"
         style={{ borderColor: "var(--border)", color: "var(--fg-muted)", background: "var(--surface-inset)" }}
       >
-        凭据只由本机 Rust Core 保管，不进入 WebView。远程地址要求 HTTPS；本机回环地址可使用 HTTP（规范 §4.6）。
+        登录令牌由本机 Rust Core 保管。开发联调支持本机和远程 HTTP，上线时使用 HTTPS。
       </p>
     </>
   );
@@ -226,28 +226,37 @@ function ShortcutsSection() {
 }
 
 function UpdateSection() {
-  const [state, setState] = useState<{ loading: boolean; message?: string }>({ loading: false });
+  const [state, setState] = useState<{ loading: boolean; message?: string; tone?: "muted" | "warn" }>({
+    loading: false,
+  });
   const check = async () => {
     setState({ loading: true });
     try {
       const info = await ipc("app_check_update", undefined);
-      setState({
-        loading: false,
-        message: info.available ? `有可用更新：${info.version ?? "新版本"}` : "已是最新版本",
-      });
+      // 如实表达：更新渠道未接入时不谎称"已是最新版本"（规范 §4.6 / 诚实原则）。
+      if (info.configured === false) {
+        setState({ loading: false, tone: "warn", message: "自动更新尚未接入，请通过官方渠道手动获取新版本。" });
+      } else if (info.available) {
+        setState({ loading: false, tone: "muted", message: `有可用更新：${info.version ?? "新版本"}` });
+      } else {
+        setState({ loading: false, tone: "muted", message: "已是最新版本" });
+      }
     } catch (e) {
-      setState({ loading: false, message: toClientError(e).message });
+      setState({ loading: false, tone: "warn", message: toClientError(e).message });
     }
   };
   return (
-    <Card title="更新" hint="更新通过签名渠道下发；下载与安装由 Rust Core 处理。">
+    <Card title="更新" hint="更新通过签名渠道下发；下载与安装由 Rust Core 处理。签名自动更新为后续增量，当前尚未接入。">
       <div className="flex items-center gap-3">
         <Button size="sm" variant="secondary" disabled={state.loading} onClick={() => void check()}>
           <RefreshCw size={14} className={state.loading ? "animate-spin" : undefined} />
           检查更新
         </Button>
         {state.message && (
-          <span className="text-[12px]" style={{ color: "var(--fg-muted)" }}>
+          <span
+            className="text-[12px]"
+            style={{ color: state.tone === "warn" ? "var(--warn)" : "var(--fg-muted)" }}
+          >
             {state.message}
           </span>
         )}

@@ -1,21 +1,20 @@
 """SkillProvider —— 文件系统 Skill 加载器（实现 EntityProvider）。
 
-数据源: {VANTA_ROOT}/workspace/skills/<name>/SKILL.md
+数据源: settings.skills_dir/<name>/SKILL.md
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from harness.contracts.base import BaseFileProvider
 from harness.contracts.frontmatter import normalize_str_list
 from harness.contracts.models import EntityFull, EntityMeta, SkillFull
+from harness.infra.settings import get_settings
 
 
 def _skills_root() -> Path:
-    vanta_root = os.getenv("VANTA_ROOT", str(Path.home() / "Vanta"))
-    return Path(vanta_root) / "workspace" / "skills"
+    return Path(get_settings().skills_dir)
 
 
 class SkillProvider(BaseFileProvider):

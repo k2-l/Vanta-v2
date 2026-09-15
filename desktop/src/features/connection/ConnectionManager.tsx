@@ -6,9 +6,9 @@ import { useConnections, useSaveConnection, useDeleteConnection, useTestConnecti
 import { useActivateConnection, useLogin } from "./useActivate";
 import { useConnection } from "@/stores/connection";
 import { toClientError, type ClientError } from "@/contracts/errors";
-import type { HealthResult } from "@/contracts/connection";
+import type { HealthResult, TlsPolicy } from "@/contracts/connection";
 
-type DraftForm = { label: string; baseUrl: string };
+type DraftForm = { label: string; baseUrl: string; tlsPolicy: TlsPolicy; caCertPath: string };
 
 /**
  * 连接管理器——添加服务器 / 测试连接 / 激活 / 登录（方案 §9、G0 完成标准）。
@@ -24,17 +24,30 @@ export function ConnectionManager() {
   const active = useConnection((s) => s.activeConnectionId);
   const auth = useConnection((s) => s.auth);
 
-  const { register, handleSubmit, reset, formState } = useForm<DraftForm>({
-    defaultValues: { label: "", baseUrl: "http://127.0.0.1:8765" },
+  const { register, handleSubmit, reset, formState, watch, getValues } = useForm<DraftForm>({
+    defaultValues: { label: "", baseUrl: "http://127.0.0.1:8765", tlsPolicy: "system", caCertPath: "" },
   });
+  const tlsPolicy = watch("tlsPolicy");
+  const usesHttps = watch("baseUrl").trim().toLowerCase().startsWith("https://");
   const [testResult, setTestResult] = useState<HealthResult | null>(null);
   const [error, setError] = useState<ClientError | null>(null);
   const [password, setPassword] = useState("");
 
+  const draftFrom = (form: Pick<DraftForm, "label" | "baseUrl" | "tlsPolicy" | "caCertPath">) => {
+    const baseUrl = form.baseUrl.trim();
+    const policy: TlsPolicy = baseUrl.toLowerCase().startsWith("https://") ? form.tlsPolicy : "system";
+    return {
+      label: form.label || baseUrl,
+      baseUrl,
+      tlsPolicy: policy,
+      caCertPath: policy === "custom_ca" ? form.caCertPath.trim() || undefined : undefined,
+    };
+  };
+
   const onSave = handleSubmit(async (form) => {
     setError(null);
     try {
-      await save.mutateAsync({ label: form.label || form.baseUrl, baseUrl: form.baseUrl });
+      await save.mutateAsync(draftFrom(form));
       reset();
     } catch (e) {
       setError(toClientError(e));
@@ -56,10 +69,27 @@ export function ConnectionManager() {
           <Field label="后端地址">
             <input
               className={inputCls}
-              placeholder="http://127.0.0.1:8765"
+              placeholder="http://10.1.1.2:8765（开发联调）"
               {...register("baseUrl", { required: true })}
             />
           </Field>
+          {usesHttps && (
+            <Field label="TLS 策略">
+              <select className={inputCls} {...register("tlsPolicy")}>
+                <option value="system">系统信任链（默认，证书需被操作系统信任）</option>
+                <option value="custom_ca">自定义 CA 证书（自签证书用此项，免装系统信任库）</option>
+              </select>
+            </Field>
+          )}
+          {usesHttps && tlsPolicy === "custom_ca" && (
+            <Field label="CA 证书路径（PEM）">
+              <input
+                className={inputCls}
+                placeholder="桌面端本机的证书路径，如 C:\\vanta\\cert.pem"
+                {...register("caCertPath")}
+              />
+            </Field>
+          )}
           <div className="flex items-center gap-2">
             <Button type="submit" size="sm" disabled={save.isPending || !formState.isValid}>
               保存
@@ -73,9 +103,7 @@ export function ConnectionManager() {
                 setError(null);
                 setTestResult(null);
                 try {
-                  const r = await test.mutateAsync({
-                    draft: { label: "draft", baseUrl: (document.querySelector<HTMLInputElement>("[name=baseUrl]")?.value ?? "").trim() },
-                  });
+                  const r = await test.mutateAsync({ draft: draftFrom(getValues()) });
                   setTestResult(r);
                 } catch (e) {
                   setError(toClientError(e));
@@ -121,6 +149,7 @@ export function ConnectionManager() {
                 <p className="text-sm font-medium truncate">{c.label}</p>
                 <p className="text-xs truncate" style={{ color: "var(--fg-muted)" }}>
                   {c.baseUrl}
+                  {c.baseUrl.startsWith("https://") && c.tlsPolicy === "custom_ca" && " · 自定义 CA"}
                   {c.lastKnownVersion && ` · ${c.lastKnownVersion}`}
                 </p>
               </div>

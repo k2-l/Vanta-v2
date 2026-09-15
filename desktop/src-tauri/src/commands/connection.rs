@@ -31,12 +31,20 @@ pub async fn connection_test(
     id: Option<String>,
     draft: Option<ConnectionDraft>,
 ) -> CmdResult<HealthResult> {
-    let base_url = match (id, draft) {
-        (Some(id), _) => state.connections.resolve_base_url(&id)?,
-        (None, Some(d)) => crate::connections::normalize_base_url(&d.base_url)?,
+    let (base_url, ca) = match (id, draft) {
+        (Some(id), _) => (state.connections.resolve_base_url(&id)?, state.connections.resolve_ca(&id)),
+        (None, Some(d)) => {
+            let url = crate::connections::normalize_base_url(&d.base_url)?;
+            // HTTP 草稿忽略旧证书路径；仅 HTTPS + custom_ca 读取证书。
+            let ca = match d.tls_policy {
+                Some(crate::connections::TlsPolicy::CustomCa) if url.starts_with("https://") => d.ca_cert_path,
+                _ => None,
+            };
+            (url, ca)
+        }
         (None, None) => return Err(crate::error::ClientError::validation("需提供 id 或草稿地址")),
     };
-    backend_gateway::health(&base_url).await
+    backend_gateway::health(&base_url, ca.as_deref()).await
 }
 
 #[derive(Debug, Serialize)]
@@ -62,7 +70,8 @@ pub struct ConnectionSession {
 #[tauri::command]
 pub async fn connection_activate(state: State<'_, AppState>, id: String) -> CmdResult<ConnectionSession> {
     let base_url = state.connections.resolve_base_url(&id)?;
-    let health = backend_gateway::health(&base_url).await?;
+    let ca = state.connections.resolve_ca(&id);
+    let health = backend_gateway::health(&base_url, ca.as_deref()).await?;
     state
         .connections
         .mark_connected(&id, health.server_version.clone())?;

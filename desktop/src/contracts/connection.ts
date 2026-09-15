@@ -12,6 +12,8 @@ export type ConnectionProfile = {
   label: string;
   baseUrl: string;
   tlsPolicy: TlsPolicy;
+  /** custom_ca 策略下的 CA 证书文件路径（PEM）；仅本机 Rust Core 读取，用于追加信任根。 */
+  caCertPath?: string;
   lastConnectedAt?: string;
   lastKnownVersion?: string;
 };
@@ -22,6 +24,7 @@ export type ConnectionDraft = {
   label: string;
   baseUrl: string;
   tlsPolicy?: TlsPolicy;
+  caCertPath?: string;
 };
 
 /** 连接状态机（方案 §9.2）——全局，侧栏/标题栏/页面统一呈现。 */
