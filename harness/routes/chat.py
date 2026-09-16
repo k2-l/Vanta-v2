@@ -232,11 +232,11 @@ async def _retry_approval_audits() -> None:
         if not pending:
             return
         ledger = await query_audit(action="tool_approval", limit=10_000)
-        hashes_by_decision = {
-            str((row.detail or {}).get("decision_id")): row.entry_hash
-            for row in ledger
-            if (row.detail or {}).get("decision_id")
-        }
+        hashes_by_decision: dict[str, str] = {}
+        for audit_row in ledger:
+            decision_id = (audit_row.detail or {}).get("decision_id")
+            if decision_id:
+                hashes_by_decision[str(decision_id)] = audit_row.entry_hash
         for row in pending:
             entry_hash = hashes_by_decision.get(row.decision_id, "")
             if not entry_hash:

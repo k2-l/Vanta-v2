@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import aclosing
+
 from fastapi import APIRouter, Depends, HTTPException, Response
 
 from harness.app.auth import require_auth
@@ -26,15 +28,26 @@ router = APIRouter(tags=["sessions"], dependencies=[Depends(require_auth)])
 _ROLE_LABELS = {"user": "用户", "assistant": "助手", "system": "系统"}
 
 
+def _session_out(session: db.Session) -> SessionOut:
+    return SessionOut(
+        id=session.id,
+        title=session.title,
+        created_at=session.created_at,
+        updated_at=session.updated_at,
+    )
+
+
+async def _require_session(session_id: str) -> db.Session:
+    session = await db.get_session(session_id)
+    if session is None:
+        raise HTTPException(404, f"会话不存在：{session_id}")
+    return session
+
+
 @router.get("/sessions", response_model=list[SessionOut])
 async def list_sessions(limit: int = 50):
-    # FIXME(handoff/健壮性): limit 未做上限钳制，客户端传 ?limit=100000 会让 DB 物化十万行 + ORM 对象。
-    # 修复：恢复 limit=max(1, min(limit, 200))（参见下方 list_runs / list_run_events 的写法）。
-    sessions = await db.list_sessions(limit=limit)
-    return [
-        SessionOut(id=s.id, title=s.title, created_at=s.created_at, updated_at=s.updated_at)
-        for s in sessions
-    ]
+    rows = await db.list_sessions(limit=max(1, min(limit, 200)))
+    return [_session_out(session) for session in rows]
 
 
 @router.get("/runs", response_model=list[RunSummaryOut])
@@ -45,30 +58,22 @@ async def list_runs(limit: int = 60):
 
 @router.post("/sessions", response_model=SessionOut, status_code=201)
 async def create_session(req: SessionCreate):
-    s = await db.create_session(title=req.title)
-    return SessionOut(id=s.id, title=s.title, created_at=s.created_at, updated_at=s.updated_at)
+    session = await db.create_session(title=req.title)
+    return _session_out(session)
 
 
 @router.get("/sessions/{session_id}", response_model=SessionOut)
 async def get_session(session_id: str):
-    s = await db.get_session(session_id)
-    if s is None:
-        raise HTTPException(404, f"会话不存在：{session_id}")
-    return SessionOut(id=s.id, title=s.title, created_at=s.created_at, updated_at=s.updated_at)
+    session = await _require_session(session_id)
+    return _session_out(session)
 
 
 @router.patch("/sessions/{session_id}", response_model=SessionOut)
 async def patch_session(session_id: str, req: SessionUpdate):
-    # FIXME(handoff/效率): update_title 现只回 bool，逼得这里再查一次 get_session（两次 DB 往返），
-    # 且下面第二个 `s is None` 是死分支（ok 已证明行存在，仅作 mypy 类型守卫）。
-    # 修复：让 db.update_title 用 UPDATE...RETURNING 直接回 Session|None，省掉二次查询与重复 404。
-    ok = await db.update_title(session_id, req.title)
-    if not ok:
+    session = await db.update_title(session_id, req.title)
+    if session is None:
         raise HTTPException(404, f"会话不存在：{session_id}")
-    s = await db.get_session(session_id)
-    if s is None:
-        raise HTTPException(404, f"会话不存在：{session_id}")
-    return SessionOut(id=s.id, title=s.title, created_at=s.created_at, updated_at=s.updated_at)
+    return _session_out(session)
 
 
 @router.delete("/sessions/{session_id}", status_code=204)
@@ -81,14 +86,10 @@ async def delete_session(session_id: str):
 
 @router.get("/sessions/{session_id}/messages", response_model=list[MessageOut])
 async def list_messages(session_id: str, limit: int = 200):
-    # FIXME(handoff/健壮性): limit 未钳制（原为 max(1, min(limit, 500))），大 limit 无界加载消息行。
-    s = await db.get_session(session_id)
-    if s is None:
-        raise HTTPException(404, f"会话不存在：{session_id}")
-    msgs = await db.recent_messages(session_id, n=limit)
+    await _require_session(session_id)
+    msgs = await db.recent_messages(session_id, n=max(1, min(limit, 500)))
     return [
-        MessageOut(id=m.id, role=m.role, content=m.content, created_at=m.created_at)
-        for m in msgs
+        MessageOut(id=m.id, role=m.role, content=m.content, created_at=m.created_at) for m in msgs
     ]
 
 
@@ -98,30 +99,23 @@ async def compress_preview(session_id: str):
 
     用户可编辑摘要后再调 commit 生效。原文一律保留在 DB，可回退。
     """
-    s = await db.get_session(session_id)
-    if s is None:
-        raise HTTPException(404, f"会话不存在：{session_id}")
-
-    # FIXME(handoff/效率): messages_upto(upto=None) 把整个会话历史全读进内存，但下面只保留
-    # token 预算内的“最近一段”，其余行全被丢弃——长会话=整份 transcript 白拉过连接池。
-    # 修复：改为 DB 侧按最新倒序 + limit/stream 取够预算即止（参考 recent_messages 的形状），
-    # upto 边界单独用 func.max(created_at) 一个聚合拿（即原 latest_message_at 的作用）。
-    msgs = await db.messages_upto(session_id)  # 全部历史至今，正序
-    if not msgs:
+    await _require_session(session_id)
+    upto = await db.latest_message_at(session_id)
+    if upto is None:
         raise HTTPException(400, "该会话没有可压缩的历史消息")
 
-    upto = msgs[-1].created_at  # 检查点边界 = 此刻最后一条消息的时间
     st = get_settings()
 
-    # 从最近往前保留在 token 上限内的原文；更早部分由已有摘要覆盖（从原文整体重生成）
+    # 从最近向前读取，在达到预算时关闭游标。
     kept: list = []
     used = 0
-    for m in reversed(msgs):
-        t = count_tokens(m.content)
-        if kept and used + t > st.compaction_input_max_tokens:
-            break
-        kept.append(m)
-        used += t
+    async with aclosing(db.messages_upto_desc(session_id, upto)) as messages:
+        async for message in messages:
+            tokens = count_tokens(message.content)
+            if kept and used + tokens > st.compaction_input_max_tokens:
+                break
+            kept.append(message)
+            used += tokens
     kept.reverse()
 
     transcript = "\n\n".join(f"{_ROLE_LABELS.get(m.role, m.role)}：{m.content}" for m in kept)
@@ -150,25 +144,19 @@ async def compress_preview(session_id: str):
 @router.post("/sessions/{session_id}/compress/commit", status_code=204)
 async def compress_commit(session_id: str, req: CompressCommitRequest):
     """主动压缩「提交」：把（可能编辑过的）摘要 + 检查点写入会话，之后按检查点装载历史。"""
-    s = await db.get_session(session_id)
-    if s is None:
-        raise HTTPException(404, f"会话不存在：{session_id}")
+    await _require_session(session_id)
     if not req.summary.strip():
         raise HTTPException(400, "摘要不能为空")
-    # FIXME(handoff/正确性): req.upto 是客户端传入的时间戳，此处未做任何钳制便写进检查点，
-    # 而 compacted_upto 决定后续历史装载（messages_after_checkpoint: created_at > upto）。
-    # 越界 upto 会把「未被摘要覆盖」的消息永久挤出上下文。旧实现在此 min(upto, 最新消息时间)。
-    # 修复：把该边界不变量下沉到 db.set_compaction（内部 clamp 到 max(created_at)），
-    # 或直接由服务端派生 upto（预览已用 msgs[-1].created_at）并从 CompressCommitRequest 去掉该字段。
-    await db.set_compaction(session_id, req.summary, req.upto)
+    try:
+        await db.set_compaction(session_id, req.summary, req.upto)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     return Response(status_code=204)
 
 
 @router.get("/sessions/{session_id}/phases")
 async def list_phases(session_id: str):
-    s = await db.get_session(session_id)
-    if s is None:
-        raise HTTPException(404, f"会话不存在：{session_id}")
+    await _require_session(session_id)
     phases = await db.list_phases(session_id)
     return [
         {
@@ -190,8 +178,7 @@ async def list_phases(session_id: str):
 
 @router.get("/sessions/{session_id}/events", response_model=list[RunEventOut])
 async def list_run_events(session_id: str, after_seq: int = 0, limit: int = 1000):
-    if await db.get_session(session_id) is None:
-        raise HTTPException(404, f"会话不存在：{session_id}")
+    await _require_session(session_id)
     rows = await db.list_run_events(
         session_id,
         after_seq=max(0, after_seq),

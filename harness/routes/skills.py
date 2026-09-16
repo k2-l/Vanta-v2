@@ -17,7 +17,7 @@ from harness.app.auth import require_auth
 from harness.contracts.frontmatter import normalize_str_list, parse_bool, split_frontmatter
 from harness.contracts.models import EntityFull, EntityMeta, SkillFull
 from harness.providers import get_provider
-from harness.routes._utils import resolve_rename, validated_entity_name
+from harness.routes._utils import resolve_rename, updated_entity_meta, validated_entity_name
 
 router = APIRouter(prefix="/v1", tags=["skills"])
 
@@ -159,12 +159,7 @@ async def update_skill(skill_id: str, patch: SkillPatch, _: Annotated[dict, Depe
     new_id, rename = resolve_rename(p, skill_id, patch.name, "技能")
 
     new_full = SkillFull(
-        meta=EntityMeta(
-            name=new_id,  # frontmatter 名与目录名（=id=loader 索引键）对齐
-            description=patch.description if patch.description is not None else cur.meta.description,
-            disable_model_invocation=cur.meta.disable_model_invocation,
-            user_invocable=cur.meta.user_invocable,
-        ),
+        meta=updated_entity_meta(cur, new_id, patch.description),
         content=patch.content if patch.content is not None else cur.content,
         model=(patch.model or None) if patch.model is not None else cur.model,
         allowed_tools=(
@@ -179,7 +174,6 @@ async def update_skill(skill_id: str, patch: SkillPatch, _: Annotated[dict, Depe
         ),
     )
 
-    # 先写新、后删旧：写失败时原技能仍在，避免非原子改名把两份都丢掉。
     p.write(new_id, new_full)
     if rename:
         p.delete(skill_id)
@@ -207,6 +201,8 @@ async def skill_dep_tree(skill_id: str, _: Annotated[dict, Depends(require_auth)
 @router.post("/skills/reindex")
 async def reindex_skills(_: Annotated[dict, Depends(require_auth)]) -> dict:
     """重建所有 skill 的 embedding 索引。"""
+    from harness.infra.vector import search_skills_semantic
+
     p = _provider()
     p.reload()
     count = 0
@@ -217,4 +213,5 @@ async def reindex_skills(_: Annotated[dict, Depends(require_auth)]) -> dict:
         _sync_skill_vector(name, full.meta.description)
         count += 1
 
-    return {"reindexed": count}
+    verified = len(search_skills_semantic("", k=count)) if count else 0
+    return {"reindexed": count, "verified": verified}

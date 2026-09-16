@@ -5,6 +5,7 @@ L2 加载内容：
   - 推荐工具：allowed_tools 字段 + 依赖知识库
   - 执行顺序：从 SOP 中提取的步骤摘要
 """
+
 from __future__ import annotations
 
 import re
@@ -64,9 +65,7 @@ def _build_l2_block(
         lines.append(f"### 调用参数说明\n{argument_hint}\n")
 
     # 推荐工具
-    tools = list(allowed_tools)
-    if not tools:
-        tools.append("（无预设工具限制）")
+    tools = list(allowed_tools) or ["（无预设工具限制）"]
     lines.append("### 推荐工具\n- " + "\n- ".join(tools))
 
     # 依赖知识库
@@ -79,14 +78,10 @@ def _build_l2_block(
     if steps:
         lines.append("")
         lines.append("### 执行顺序")
-        lines.extend(f"{s}" for s in steps)
+        lines.extend(steps)
 
     # SOP 正文（排除已提取的步骤标题）
-    body_parts = []
-    for title, body in sections.items():
-        if title == "_header":
-            continue
-        body_parts.append(f"### {title}\n{body}")
+    body_parts = [f"### {title}\n{body}" for title, body in sections.items() if title != "_header"]
     if body_parts:
         lines.append("")
         lines.append("### SOP（标准操作流程）")

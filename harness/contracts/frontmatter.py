@@ -117,29 +117,24 @@ def render_md(full: EntityFull) -> str:
     return f"---\n{fm}\n---\n{full.content}" if fm else full.content
 
 
-# ── 实体名校验（防路径穿越） ────────────────────────────────
+# ── 实体名和路径边界 ────────────────────────────────────────
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 def validate_entity_name(name: str) -> str:
-    """校验实体名可安全用作单层目录名，返回去空白后的名字；非法抛 ValueError。
-
-    实体落盘为 <root>/<name>/<filename>，name 必须是单层目录名。禁止路径分隔符、
-    '.'/'..'、绝对路径与越界字符，防止 register / rename / delete 经 name 做路径穿越，
-    把内容写入（或 rmtree）到 root 之外。
-    """
-    n = (name or "").strip()
-    if not _NAME_RE.match(n):
+    """校验单层实体目录名；非法名称不能用于写入或删除。"""
+    normalized = (name or "").strip()
+    if not _NAME_RE.match(normalized):
         raise ValueError(
             f"非法实体名 {name!r}：仅允许字母/数字/._-（首字符为字母或数字），"
             "长度 1-64，不含路径分隔符或 . / .."
         )
-    return n
+    return normalized
 
 
 def _ensure_within(root: Path, target: Path) -> None:
-    """兜底：确保 target 真实路径落在 root 内（防符号链接等绕过名字校验的穿越）。"""
+    """阻止符号链接把实体操作导向根目录之外。"""
     try:
         target.resolve().relative_to(root.resolve())
     except ValueError:
@@ -165,7 +160,7 @@ def write_entity(root: Path, name: str, filename: str, full: EntityFull) -> Path
     """把实体按 CC 标准格式写入 <root>/<name>/<filename>，返回文件路径。"""
     name = validate_entity_name(name)
     d = root / name
-    _ensure_within(root, d)  # 名字校验后再兜底一次，堵符号链接替换
+    _ensure_within(root, d)
     d.mkdir(parents=True, exist_ok=True)
     md = d / filename
     md.write_text(render_md(full), encoding="utf-8")

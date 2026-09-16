@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 from harness.contracts.frontmatter import validate_entity_name
+from harness.contracts.models import EntityFull, EntityMeta
 from harness.infra.logging import log
 
 
@@ -93,7 +94,7 @@ def knowledge_to_dict(r: Any) -> dict:
         "title":    r.title,
         "category": r.category,
         "content":  r.content,
-        "tags":     json.loads(r.tags) if r.tags else [],
+        "tags":     json.loads(r.tags),
     }
 
 
@@ -162,10 +163,10 @@ def apply_patch(record: Any, patch: Any, exclude: set[str] | None = None) -> Non
             setattr(record, field, value)
 
 
-# ─── 实体名 / 改名解析（skills & agents 共用） ────────────────────────
+# ─── Agent / Skill 命名与更新 ────────────────────────────────────────
 
 def validated_entity_name(name: str) -> str:
-    """校验实体名，非法则转 400；把 ValueError→HTTP 的收敛到一处，register/rename 共用。"""
+    """将非法实体名转换为路由层的 400 错误。"""
     try:
         return validate_entity_name(name)
     except ValueError as exc:
@@ -175,11 +176,7 @@ def validated_entity_name(name: str) -> str:
 def resolve_rename(
     provider: Any, current_id: str, new_name: str | None, label: str
 ) -> tuple[str, bool]:
-    """解析 PATCH 的目标名，返回 (new_id, rename)。skills / agents 的 update 共用同一契约。
-
-    new_name 为 None 或校验后等于原 id → 不改名；否则校验（拒空/穿越，400）、
-    冲突检测（目标已存在，409），返回新 id。
-    """
+    """校验 PATCH 目标名，拒绝冲突并返回 (目标名, 是否改名)。"""
     if new_name is None:
         return current_id, False
     candidate = validated_entity_name(new_name)
@@ -188,6 +185,16 @@ def resolve_rename(
     if provider.has(candidate):
         raise HTTPException(409, f"目标{label}名已存在：{candidate}")
     return candidate, True
+
+
+def updated_entity_meta(current: EntityFull, name: str, description: str | None) -> EntityMeta:
+    """PATCH 时保留调用控制字段，只更新名称与描述。"""
+    return EntityMeta(
+        name=name,
+        description=description if description is not None else current.meta.description,
+        disable_model_invocation=current.meta.disable_model_invocation,
+        user_invocable=current.meta.user_invocable,
+    )
 
 
 # ─── 目录扫描注册 ────────────────────────────────────────────────────

@@ -39,6 +39,26 @@ def _decode_bytes(b: bytes) -> str:
     return b.decode("utf-8", errors="replace")
 
 
+def _command_result(
+    returncode: int,
+    stdout: str,
+    stderr: str,
+    *,
+    artifacts: list[dict[str, Any]],
+    truncate: bool = False,
+) -> ToolResult:
+    """把命令输出转换为统一结果；调用方决定是否按合并后长度截断。"""
+    output = stdout + (f"\n[stderr]\n{stderr}" if stderr else "")
+    if truncate:
+        output = output[:MAX_OUTPUT_BYTES]
+    return ToolResult(
+        ok=returncode == 0,
+        output=output,
+        error=None if returncode == 0 else f"exit code {returncode}",
+        artifacts=artifacts,
+    )
+
+
 def _resolve_cwd(cwd: str | None) -> tuple[str, str | None]:
     """校验并返回沙箱化的工作目录。返回 (resolved_path, error_str)。"""
     s = get_settings()
@@ -78,12 +98,12 @@ async def _exec_command(command: str, cwd: str | None, timeout: float) -> ToolRe
             working_dir=cwd or "",
             timeout=int(timeout),
         )
-        output = res.stdout + (f"\n[stderr]\n{res.stderr}" if res.stderr else "")
-        return ToolResult(
-            ok=res.exit_code == 0,
-            output=output[:MAX_OUTPUT_BYTES],
-            error=None if res.exit_code == 0 else f"exit code {res.exit_code}",
+        return _command_result(
+            res.exit_code,
+            res.stdout,
+            res.stderr,
             artifacts=[{"returncode": res.exit_code}],
+            truncate=True,
         )
 
     effective_cwd, cwd_error = _resolve_cwd(cwd)
@@ -106,13 +126,10 @@ async def _exec_command(command: str, cwd: str | None, timeout: float) -> ToolRe
 
     stdout = _decode_bytes(stdout_b[:MAX_OUTPUT_BYTES])
     stderr = _decode_bytes(stderr_b[:MAX_OUTPUT_BYTES])
-    output = stdout
-    if stderr:
-        output += f"\n[stderr]\n{stderr}"
-    return ToolResult(
-        ok=proc.returncode == 0,
-        output=output,
-        error=None if proc.returncode == 0 else f"exit code {proc.returncode}",
+    return _command_result(
+        proc.returncode,
+        stdout,
+        stderr,
         artifacts=[{"returncode": proc.returncode}],
     )
 
@@ -126,12 +143,12 @@ async def _run_in_sandbox(exec_env, command: str, timeout: float) -> ToolResult:
             exec_env.engagement_id, exec_env.scope_targets, exec_env.dns_resolver_ip
         )
         rc, out, err = await manager.run_tool(["sh", "-c", command], timeout=int(timeout))
-        output = out + (f"\n[stderr]\n{err}" if err else "")
-        return ToolResult(
-            ok=rc == 0,
-            output=output[:MAX_OUTPUT_BYTES],
-            error=None if rc == 0 else f"exit code {rc}",
+        return _command_result(
+            rc,
+            out,
+            err,
             artifacts=[{"returncode": rc, "sandbox": exec_env.engagement_id}],
+            truncate=True,
         )
     except Exception as exc:  # noqa: BLE001 —— 沙箱起不来=不在沙箱外裸跑，优雅报错
         return ToolResult.fail(

@@ -451,22 +451,23 @@ async def list_run_summaries(limit: int = 60) -> list[dict]:
     summaries: list[dict] = []
     for row in result:
         step_count = int(row.steps or 0)
-        status = (
-            "queued"
-            if step_count == 0
-            else "running"
-            if int(row.active or 0) > 0
-            else "failed"
-            if int(row.failed or 0) > 0
-            else "completed"
+        active_count = int(row.active or 0)
+        failed_count = int(row.failed or 0)
+        if step_count == 0:
+            status = "queued"
+        elif active_count > 0:
+            status = "running"
+        elif failed_count > 0:
+            status = "failed"
+        else:
+            status = "completed"
+        finished_at = (
+            row.phase_updated_at if status in ("completed", "failed", "cancelled") else None
         )
-        finished_at = row.phase_updated_at if status in ("completed", "failed", "cancelled") else None
-        duration_end = finished_at or (_now() if row.started_at else None)
-        duration_ms = (
-            max(0, int((duration_end - row.started_at).total_seconds() * 1000))
-            if duration_end and row.started_at
-            else None
-        )
+        duration_ms = None
+        if row.started_at:
+            duration_end = finished_at or _now()
+            duration_ms = max(0, int((duration_end - row.started_at).total_seconds() * 1000))
         summaries.append(
             {
                 "id": row.id,
@@ -517,15 +518,12 @@ async def append_message(session_id: str, role: str, content: str) -> Message:
 
 
 async def recent_messages(session_id: str, n: int = 16) -> list[Message]:
-    # FIXME(handoff/确定性): 排序丢了 (created_at, id) 复合键的次级 id，同一微秒的多条消息顺序不稳定
-    # （分页/历史装载可能错序或漏条）。需要稳定顺序时恢复 .order_by(created_at.desc(), id.desc())。
-    # 同一问题也在 messages_after_checkpoint 的两处 order_by。
     sf = session_factory()
     async with sf() as db:
         result = await db.execute(
             select(Message)
             .where(Message.session_id == session_id)
-            .order_by(Message.created_at.desc())
+            .order_by(Message.created_at.desc(), Message.id.desc())
             .limit(n)
         )
         rows = list(result.scalars().all())
@@ -533,18 +531,19 @@ async def recent_messages(session_id: str, n: int = 16) -> list[Message]:
         return rows
 
 
-async def update_title(session_id: str, title: str) -> bool:
-    # FIXME(handoff/效率): 返回 bool 迫使调用方（routes/sessions.py patch_session）再查一次拿行。
-    # 改用 UPDATE...RETURNING 回 Session|None，一次往返即可（asyncpg 支持 RETURNING）。
+async def update_title(session_id: str, title: str) -> Session | None:
+    """更新标题，并在同一次查询中返回更新后的会话。"""
     sf = session_factory()
     async with sf() as db:
         result = await db.execute(
             update(Session)
             .where(Session.id == session_id)
             .values(title=title[:200])
+            .returning(Session)
         )
+        updated = result.scalar_one_or_none()
         await db.commit()
-        return result.rowcount > 0
+        return updated
 
 
 _INTERRUPTED_NOTICE = "⚠️ 上一条回复因服务重启而中断，请重新发送。"
@@ -638,12 +637,44 @@ async def set_compaction(session_id: str, summary: str, upto: datetime) -> None:
     """
     sf = session_factory()
     async with sf() as db:
+        latest = await db.scalar(
+            select(func.max(Message.created_at)).where(Message.session_id == session_id)
+        )
+        if latest is None:
+            raise ValueError("该会话没有消息，无法设置压缩检查点")
+        normalized_upto = upto if upto.tzinfo else upto.replace(tzinfo=UTC)
         await db.execute(
             update(Session)
             .where(Session.id == session_id)
-            .values(rolling_summary=summary, compacted_upto=upto)
+            .values(rolling_summary=summary, compacted_upto=min(normalized_upto, latest))
         )
         await db.commit()
+
+
+async def latest_message_at(session_id: str) -> datetime | None:
+    """返回会话最后一条消息的时间，不加载消息正文。"""
+    sf = session_factory()
+    async with sf() as db:
+        return await db.scalar(
+            select(func.max(Message.created_at)).where(Message.session_id == session_id)
+        )
+
+
+async def messages_upto_desc(session_id: str, upto: datetime) -> AsyncGenerator[Message, None]:
+    """按时间倒序流式读取压缩源，允许调用方提前停止。"""
+    sf = session_factory()
+    async with sf() as db:
+        result = await db.stream(
+            select(Message)
+            .where(Message.session_id == session_id, Message.created_at <= upto)
+            .order_by(Message.created_at.desc(), Message.id.desc())
+            .execution_options(yield_per=100)
+        )
+        try:
+            async for message in result.scalars():
+                yield message
+        finally:
+            await result.close()
 
 
 async def messages_upto(session_id: str, upto: datetime | None = None) -> list[Message]:
@@ -656,7 +687,7 @@ async def messages_upto(session_id: str, upto: datetime | None = None) -> list[M
         stmt = select(Message).where(Message.session_id == session_id)
         if upto is not None:
             stmt = stmt.where(Message.created_at <= upto)
-        stmt = stmt.order_by(Message.created_at.asc())
+        stmt = stmt.order_by(Message.created_at.asc(), Message.id.asc())
         result = await db.execute(stmt)
         return list(result.scalars().all())
 
@@ -676,7 +707,7 @@ async def messages_after_checkpoint(session_id: str, fallback_n: int = 16) -> li
             result = await db.execute(
                 select(Message)
                 .where(Message.session_id == session_id)
-                .order_by(Message.created_at.desc())
+                .order_by(Message.created_at.desc(), Message.id.desc())
                 .limit(fallback_n)
             )
             rows = list(result.scalars().all())
@@ -685,7 +716,7 @@ async def messages_after_checkpoint(session_id: str, fallback_n: int = 16) -> li
         result = await db.execute(
             select(Message)
             .where(Message.session_id == session_id, Message.created_at > summary_upto)
-            .order_by(Message.created_at.asc())
+            .order_by(Message.created_at.asc(), Message.id.asc())
         )
         return list(result.scalars().all())
 

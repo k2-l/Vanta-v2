@@ -102,6 +102,65 @@ def describe_impact(risk: str) -> str:
     return _IMPACT_BY_RISK.get(risk, _IMPACT_BY_RISK["medium"])
 
 
+async def _record_expired_approval(call_id: str, meta: dict[str, str]) -> None:
+    """持久化过期决策并写审计账本；审计失败仍由调用方拒绝工具执行。"""
+    decision_id = uuid.uuid4().hex
+    history_saved = False
+    try:
+        await db.save_approval_history(
+            decision_id=decision_id,
+            call_id=call_id,
+            tool_name=meta["tool_name"],
+            session_id=meta["session_id"],
+            actor="system",
+            decision="expired",
+            risk=meta["risk"],
+            risk_source=meta["risk_source"],
+            target=meta["target"],
+            scope=meta["scope"],
+            impact=meta["impact"],
+            message=meta["message"],
+            requested_at=meta["requested_at"],
+            expires_at=meta["expires_at"],
+        )
+        history_saved = True
+    except Exception as exc:  # noqa: BLE001 — 审批仍须 fail-closed
+        log.warning("approval.expiry_history_failed", call_id=call_id, exc=str(exc)[:200])
+
+    entry_hash = await append_audit(
+        "tool_approval",
+        session_id=meta["session_id"],
+        actor="system",
+        target=meta["target"],
+        command=meta["message"],
+        decision="expired",
+        detail={
+            "decision_id": decision_id,
+            "call_id": call_id,
+            "tool_name": meta["tool_name"],
+            "risk": meta["risk"],
+            "risk_source": meta["risk_source"],
+            "scope": meta["scope"],
+            "impact": meta["impact"],
+            "requested_at": meta["requested_at"],
+            "expires_at": meta["expires_at"],
+            "audit_recorded": True,
+        },
+    )
+    if history_saved and entry_hash:
+        try:
+            await db.mark_approval_audited(decision_id, entry_hash)
+        except Exception as exc:  # noqa: BLE001 — 下次历史查询会按 decision_id 补偿
+            log.warning("approval.expiry_mark_failed", call_id=call_id, exc=str(exc)[:200])
+    if not entry_hash:
+        log.warning(
+            "approval.expiry_audit_failed",
+            call_id=call_id,
+            tool_name=meta["tool_name"],
+            session_id=meta["session_id"],
+        )
+
+
 async def request_approval(
     session_id: str,
     tool_name: str,
@@ -167,61 +226,18 @@ async def request_approval(
         log.warning("approval.timeout", call_id=call_id, tool_name=tool_name, session_id=session_id)
         # 超时项不能随内存队列清理而消失：写入同一哈希链，供审批历史长期追溯。
         # 审计层维持 fail-open；工具执行仍在本函数中 fail-closed。
-        decision_id = uuid.uuid4().hex
-        meta = _pending_meta[call_id]
-        history_saved = False
-        try:
-            await db.save_approval_history(
-                decision_id=decision_id,
-                call_id=call_id,
-                tool_name=tool_name,
-                session_id=session_id,
-                actor="system",
-                decision="expired",
-                risk=risk,
-                risk_source=risk_source,
-                target=target,
-                scope=scope,
-                impact=impact,
-                message=message,
-                requested_at=meta["requested_at"],
-                expires_at=meta["expires_at"],
-            )
-            history_saved = True
-        except Exception as exc:  # noqa: BLE001 — 审批仍须 fail-closed
-            log.warning("approval.expiry_history_failed", call_id=call_id, exc=str(exc)[:200])
-        entry_hash = await append_audit(
-            "tool_approval",
-            session_id=session_id,
-            actor="system",
-            target=target,
-            command=message,
-            decision="expired",
-            detail={
-                "decision_id": decision_id,
-                "call_id": call_id,
-                "tool_name": tool_name,
-                "risk": risk,
-                "risk_source": risk_source,
-                "scope": scope,
-                "impact": impact,
-                "requested_at": meta["requested_at"],
-                "expires_at": meta["expires_at"],
-                "audit_recorded": True,
-            },
-        )
-        if history_saved and entry_hash:
-            try:
-                await db.mark_approval_audited(decision_id, entry_hash)
-            except Exception as exc:  # noqa: BLE001 — 下次历史查询会按 decision_id 补偿
-                log.warning("approval.expiry_mark_failed", call_id=call_id, exc=str(exc)[:200])
-        if not entry_hash:
-            log.warning(
-                "approval.expiry_audit_failed",
-                call_id=call_id,
-                tool_name=tool_name,
-                session_id=session_id,
-            )
+        expired_meta = {
+            **_pending_meta[call_id],
+            "tool_name": tool_name,
+            "message": message,
+            "session_id": session_id,
+            "risk": risk,
+            "risk_source": risk_source,
+            "target": target,
+            "scope": scope,
+            "impact": impact,
+        }
+        await _record_expired_approval(call_id, expired_meta)
         return False
     except Exception as exc:  # noqa: BLE001 — fail-closed：任何异常都视为拒绝
         log.warning("approval.error", call_id=call_id, tool_name=tool_name, error=str(exc)[:200])

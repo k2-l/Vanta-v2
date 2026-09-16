@@ -33,6 +33,21 @@ def _media_type(kind: str, content: str) -> str:
     return "text/plain"
 
 
+def _render_artifact(record: Any) -> str:
+    tags = json.loads(record.tags) if record.tags else []
+    tag_text = ("  #" + " #".join(tags)) if tags else ""
+    body = (record.evidence or "").replace("\n", " ")[:120]
+    summary = f"- {record.id} [{record.kind}/{record.sensitivity}] {record.title}{tag_text}"
+    return summary + (f"\n    {body}" if body else "")
+
+
+def _render_board(records: list[Any], kind: str) -> str:
+    kind_filter = f" · kind={kind}" if kind else ""
+    heading = f"看板 {len(records)} 条{kind_filter}（最新在前）："
+    lines = [heading, *[_render_artifact(record) for record in records]]
+    return "\n".join(lines)
+
+
 @register
 class BoardTool(Tool):
     name = "board"
@@ -51,10 +66,15 @@ class BoardTool(Tool):
             "title": {"type": "string", "description": "标题（write 用）"},
             "content": {"type": "string", "description": "正文（write 用）"},
             "sensitivity": {
-                "type": "string", "enum": _SENS,
+                "type": "string",
+                "enum": _SENS,
                 "description": "敏感级（write 用，默认 internal；secret 类不在此存明文，见 P3）",
             },
-            "tags": {"type": "array", "items": {"type": "string"}, "description": "标签（write 用）"},
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "标签（write 用）",
+            },
         },
         "required": ["action"],
     }
@@ -76,12 +96,17 @@ class BoardTool(Tool):
 
         if action == "write":
             if kind not in _KINDS:
-                return ToolResult.fail(error=f"write 需要 kind ∈ {_KINDS}", error_code="INVALID_ARGS")
+                return ToolResult.fail(
+                    error=f"write 需要 kind ∈ {_KINDS}", error_code="INVALID_ARGS"
+                )
             if not title:
                 return ToolResult.fail(error="write 需要 title", error_code="INVALID_ARGS")
             sens = sensitivity if sensitivity in _SENS else "internal"
             rec = await db.create_artifact(
-                engagement_id=eid, kind=kind, title=title, content=content,
+                engagement_id=eid,
+                kind=kind,
+                title=title,
+                content=content,
                 producer=env.session_id or "",
                 source_session_id=env.session_id or "",
                 media_type=_media_type(kind, content),
@@ -95,13 +120,6 @@ class BoardTool(Tool):
             recs = await db.list_artifacts(engagement_id=eid, kind=kind or None)
             if not recs:
                 return ToolResult(ok=True, output="当前 engagement 看板为空。")
-            lines = [f"看板 {len(recs)} 条" + (f" · kind={kind}" if kind else "") + "（最新在前）："]
-            for r in recs:
-                t = json.loads(r.tags) if r.tags else []
-                tagstr = ("  #" + " #".join(t)) if t else ""
-                body = (r.evidence or "").replace("\n", " ")[:120]
-                lines.append(f"- {r.id} [{r.kind}/{r.sensitivity}] {r.title}{tagstr}"
-                             + (f"\n    {body}" if body else ""))
-            return ToolResult(ok=True, output="\n".join(lines))
+            return ToolResult(ok=True, output=_render_board(recs, kind))
 
         return ToolResult.fail(error=f"未知 action：{action}", error_code="INVALID_ARGS")

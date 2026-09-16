@@ -22,7 +22,7 @@ from harness.contracts.models import (
     normalize_provider_name,
 )
 from harness.providers import get_provider
-from harness.routes._utils import resolve_rename, validated_entity_name
+from harness.routes._utils import resolve_rename, updated_entity_meta, validated_entity_name
 
 router = APIRouter(prefix="/v1", tags=["agents"])
 
@@ -161,12 +161,7 @@ async def update_agent(
     new_id, rename = resolve_rename(p, agent_id, patch.name, "Agent")
 
     new_full = AgentFull(
-        meta=EntityMeta(
-            name=new_id,  # frontmatter 名与目录名（=id=loader 索引键）对齐
-            description=patch.description if patch.description is not None else cur.meta.description,
-            disable_model_invocation=cur.meta.disable_model_invocation,
-            user_invocable=cur.meta.user_invocable,
-        ),
+        meta=updated_entity_meta(cur, new_id, patch.description),
         content=patch.content if patch.content is not None else cur.content,
         model=(patch.model or None) if patch.model is not None else cur.model,
         provider=patch.provider if "provider" in patch.model_fields_set else cur.provider,
@@ -178,7 +173,6 @@ async def update_agent(
         ),
     )
 
-    # 先写新、后删旧：写失败时原 Agent 仍在，避免非原子改名把两份都丢掉。
     p.write(new_id, new_full)
     if rename:
         p.delete(agent_id)
