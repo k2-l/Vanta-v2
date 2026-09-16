@@ -30,6 +30,34 @@ _USER_AGENT = "Mozilla/5.0 (compatible; Vanta/1.0; +https://github.com/)"
 _GITHUB_API = "https://api.github.com"
 
 
+class _PinnedTransport(httpx.AsyncBaseTransport):
+    """把已校验域名固定连接到指定 IP，同时保留原 Host 与 HTTPS SNI。"""
+
+    def __init__(self, hostname: str, address: str) -> None:
+        self._hostname = hostname.lower()
+        self._address = address
+        # 禁用环境代理，避免代理端重新解析用户域名而绕过固定地址。
+        self._inner = httpx.AsyncHTTPTransport(trust_env=False)
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if request.url.host.lower() != self._hostname:
+            raise ValueError("固定传输层拒绝访问未校验的主机")
+        extensions = dict(request.extensions)
+        if request.url.scheme == "https":
+            extensions["sni_hostname"] = self._hostname
+        pinned_request = httpx.Request(
+            method=request.method,
+            url=request.url.copy_with(host=self._address),
+            headers=request.headers,
+            stream=request.stream,
+            extensions=extensions,
+        )
+        return await self._inner.handle_async_request(pinned_request)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
 def sniff_source_type(url: str) -> str:
     """URL 含 github.com → "github"，否则 "article"。解析失败 → "unknown"。"""
     try:
@@ -71,10 +99,21 @@ async def _http_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx
     return resp
 
 
-async def _fetch_article(url: str) -> dict[str, Any]:
+async def _fetch_article(url: str, resolved_ips: tuple[str, ...]) -> dict[str, Any]:
+    parsed = urlparse(url)
+    hostname = parsed.hostname or ""
+    if not hostname or not resolved_ips:
+        raise ValueError("网页抓取缺少已校验的固定公网地址")
     headers = {"User-Agent": _USER_AGENT}
-    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, follow_redirects=True) as client:
+    transport = _PinnedTransport(hostname, resolved_ips[0])
+    async with httpx.AsyncClient(
+        timeout=_HTTP_TIMEOUT,
+        follow_redirects=False,
+        transport=transport,
+    ) as client:
         resp = await _http_get(client, url, headers=headers)
+        if resp.is_redirect:
+            raise ValueError("为防止 SSRF，通用网页抓取不允许 HTTP 重定向")
         body = resp.content[:_MAX_BODY_BYTES]
         html = body.decode(resp.encoding or "utf-8", errors="replace")
 
@@ -85,7 +124,7 @@ async def _fetch_article(url: str) -> dict[str, Any]:
         "meta": {
             "status_code": resp.status_code,
             "content_type": resp.headers.get("content-type", ""),
-            "final_url": str(resp.url),
+            "final_url": url,
         },
     }
 
@@ -134,7 +173,12 @@ async def _fetch_github(url: str) -> dict[str, Any]:
     }
 
 
-async def fetch(url: str, source_type: str) -> dict[str, Any]:
+async def fetch(
+    url: str,
+    source_type: str,
+    *,
+    resolved_ips: tuple[str, ...] = (),
+) -> dict[str, Any]:
     """抓取 url，返回 {"title", "content", "meta"}。
 
     source_type 为 "github" 时走 GitHub REST API，否则按通用 article 抓 HTML。
@@ -142,4 +186,4 @@ async def fetch(url: str, source_type: str) -> dict[str, Any]:
     """
     if source_type == "github":
         return await _fetch_github(url)
-    return await _fetch_article(url)
+    return await _fetch_article(url, resolved_ips)

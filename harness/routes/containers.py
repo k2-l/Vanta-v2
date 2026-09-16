@@ -79,6 +79,11 @@ async def create_container(
     _: Annotated[dict, Depends(require_auth)],
 ) -> dict:
     """建实体 podman 容器 ＋ 库记录。库写失败则回滚删掉刚建的容器（对齐 nexus）。"""
+    async with session_factory()() as db:
+        existing = await db.scalar(select(ContainerRecord.id).where(ContainerRecord.name == req.name))
+    if existing is not None:
+        raise HTTPException(409, f"容器名称已存在：{req.name}")
+
     try:
         podman_id = await podman.create_container(req.name, req.image, req.ports, req.env_vars)
     except Exception as exc:  # noqa: BLE001

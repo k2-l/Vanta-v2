@@ -1,7 +1,7 @@
 """MCP server 可视化管理 — 读写都在 harness（连接状态是 harness 进程内运行时态，
 不宜外部缓存）。
 
-持久化：复用 harness/infra/config_store.py 的 config.json 覆盖层，把整个
+持久化：复用 harness/infra/config_store.py 的 config.local.json 覆盖层，把整个
 mcp_servers 列表作为一个键整体 save（不直接写 data/config.toml，不进 routes/config.py
 的 EDITABLE 白名单 —— 那条路径是"单字段 PATCH"，这里是"列表级整体替换"，语义不同）。
 
@@ -107,7 +107,7 @@ def _to_view(spec: dict[str, Any], *, with_tools: bool = False) -> MCPServerView
 
 
 def _save_servers(specs: list[dict[str, Any]]) -> None:
-    """整体 save mcp_servers 列表（config_store.save 内部已 get_settings.cache_clear()）。"""
+    """整体保存 mcp_servers 列表（config_store.save 内部会清 settings 缓存）。"""
     config_store.save(get_settings().data_dir, {"mcp_servers": specs})
 
 

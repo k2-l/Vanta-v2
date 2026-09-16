@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, patch
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import ValidationError
 
+environ.setdefault("ANTHROPIC_API_KEY", "test-only-model-key")
+
 from harness.agents.provider import AgentProvider
 from harness.contracts.models import AgentFull, EntityMeta
 from harness.core.capabilities.services import _ask_title
@@ -408,7 +410,10 @@ class TestProviderRouting(unittest.TestCase):
             anthropic_api_key=None, anthropic_auth_token="oauth-xyz", anthropic_base_url="",
             openai_api_key=None, openai_base_url="",
         )
-        with patch.object(p, "get_settings", return_value=stub):
+        with (
+            patch.object(p, "get_settings", return_value=stub),
+            patch.dict(environ, {"ANTHROPIC_API_KEY": ""}),
+        ):
             m = p.build_chat_model(provider=p.ANTHROPIC, model="claude-x", max_tokens=32)
         # Bearer/OAuth token 走 Authorization 头，且不发 x-api-key（api_key 不设置）
         self.assertEqual(

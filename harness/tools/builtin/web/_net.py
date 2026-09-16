@@ -10,6 +10,7 @@ from __future__ import annotations
 import html as _html
 import ipaddress
 import re
+import socket
 from urllib.parse import urlparse
 
 # 放行的协议
@@ -19,42 +20,57 @@ _ALLOWED_SCHEMES = frozenset({"http", "https"})
 _LOCAL_HOSTNAMES = frozenset({"localhost", "localhost.localdomain", "ip6-localhost"})
 
 
-def safe_public_url(url: str) -> tuple[bool, str]:
-    """尽力而为的 SSRF 前置校验（仅字面量层面，不做 DNS 解析）。
+def resolve_public_url(url: str) -> tuple[bool, str, tuple[str, ...]]:
+    """校验 URL 并返回已确认的公网 IP，供请求层固定实际连接目标。
 
-    返回 (是否放行, 拒绝原因)。放行时原因为空串。
-    按主机字面量拦回环/私有/链路本地地址；DNS 重绑定等高级绕过不在 v1 目标内。
+    返回 (是否放行, 拒绝原因, 公网 IP)。请求层必须连接这里返回的地址，不能再次解析
+    用户提供的域名，否则校验与连接之间仍存在 DNS 重绑定窗口。
     """
     try:
         p = urlparse(url.strip())
     except Exception:  # noqa: BLE001
-        return False, "URL 解析失败"
+        return False, "URL 解析失败", ()
 
     if p.scheme.lower() not in _ALLOWED_SCHEMES:
-        return False, f"只允许 http/https，收到：{p.scheme or '(空)'}"
+        return False, f"只允许 http/https，收到：{p.scheme or '(空)'}", ()
 
     host = (p.hostname or "").lower()
     if not host:
-        return False, "URL 缺少主机名"
+        return False, "URL 缺少主机名", ()
     if host in _LOCAL_HOSTNAMES or host.endswith(".localhost"):
-        return False, "禁止访问本地地址"
+        return False, "禁止访问本地地址", ()
 
-    # 字面 IP → 拦回环/私有/保留段
+    # 字面 IP → 拦非公网地址。
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
         ip = None
-    if ip is not None and (
-        ip.is_loopback
-        or ip.is_private
-        or ip.is_link_local
-        or ip.is_reserved
-        or ip.is_multicast
-        or ip.is_unspecified
-    ):
-        return False, f"禁止访问非公网地址：{host}"
+    if ip is not None and not ip.is_global:
+        return False, f"禁止访问非公网地址：{host}", ()
 
-    return True, ""
+    if ip is None:
+        try:
+            port = p.port or (443 if p.scheme.lower() == "https" else 80)
+            addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        except (OSError, ValueError) as exc:
+            return False, f"主机名解析失败：{type(exc).__name__}", ()
+        resolved = {
+            ipaddress.ip_address(item[4][0].split("%", 1)[0]) for item in addresses
+        }
+        if not resolved:
+            return False, "主机名未解析到地址", ()
+        if any(not address.is_global for address in resolved):
+            return False, "主机名解析到非公网地址", ()
+    else:
+        resolved = {ip}
+
+    return True, "", tuple(sorted(str(address) for address in resolved))
+
+
+def safe_public_url(url: str) -> tuple[bool, str]:
+    """兼容布尔校验调用；联网请求应使用 resolve_public_url 返回的固定地址。"""
+    allowed, reason, _addresses = resolve_public_url(url)
+    return allowed, reason
 
 
 # ── HTML → 纯文本：去 script/style/注释/head，块级标签转换行，剥标签，反转义，压空白 ──

@@ -16,12 +16,13 @@ from typing import Any
 
 
 class EventBus:
-    def __init__(self) -> None:
+    def __init__(self, max_queue_size: int = 256) -> None:
+        self._max_queue_size = max(1, max_queue_size)
         self._queues: dict[str, list[asyncio.Queue[dict[str, Any]]]] = defaultdict(list)
 
     @asynccontextmanager
     async def subscribe(self, session_id: str) -> AsyncIterator[asyncio.Queue[dict[str, Any]]]:
-        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=self._max_queue_size)
         self._queues[session_id].append(q)
         try:
             yield q
@@ -32,7 +33,18 @@ class EventBus:
 
     async def publish(self, session_id: str, event: dict[str, Any]) -> None:
         for q in list(self._queues.get(session_id, [])):
-            await q.put(event)
+            if q.full():
+                # 普通遥测可从持久历史/快照恢复；人工审批事件必须优先送达。
+                if event.get("type") != "approval_required":
+                    continue
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                pass
 
     def subscriber_count(self, session_id: str) -> int:
         return len(self._queues.get(session_id, []))

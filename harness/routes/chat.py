@@ -60,6 +60,52 @@ _SENSITIVE_EVENT_KEYS = (
 )
 
 
+def _abort_events(open_phase_ids: set[str]) -> list[dict[str, str]]:
+    """客户端提前关闭流时，为所有已开始阶段生成可持久化终态。"""
+    phase_ids = {"agent", *open_phase_ids}
+    events = [
+        {
+            "event": "phase",
+            "data": json.dumps(
+                {
+                    "type": "phase",
+                    "id": phase_id,
+                    "label": "连接中断",
+                    "status": "failed",
+                    "detail": "客户端连接中断，运行已取消",
+                },
+                ensure_ascii=False,
+            ),
+        }
+        for phase_id in sorted(phase_ids)
+    ]
+    events.append(
+        {
+            "event": "worker_end",
+            "data": json.dumps(
+                {
+                    "type": "worker_end",
+                    "worker": "agent",
+                    "status": "failed",
+                    "summary": "客户端连接中断，运行已取消",
+                    "task_id": "agent",
+                },
+                ensure_ascii=False,
+            ),
+        }
+    )
+    return events
+
+
+def _event_payload(event: dict[str, str]) -> dict:
+    """解析 SSE 事件负载；损坏或非对象负载按空对象处理。"""
+    try:
+        payload = json.loads(event.get("data", "{}"))
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def _redact_event_value(value):
     """递归脱敏后再写运行历史，避免工具输入/输出中的高置信凭据落盘。"""
 
@@ -115,24 +161,60 @@ async def chat(
     if not session_id:
         s = await db.create_session()
         session_id = s.id
+    elif await db.get_session(session_id) is None:
+        raise HTTPException(404, f"会话不存在：{session_id}")
 
     async def event_gen():
         event_queue: asyncio.Queue[dict[str, str] | None] = asyncio.Queue()
+        open_phase_ids: set[str] = set()
+        terminal_seen = False
 
         async def history_writer() -> None:
             while (event := await event_queue.get()) is not None:
                 await _record_runtime_event(session_id, event)
 
         writer = asyncio.create_task(history_writer())
+        runtime_stream = _runtime.stream_events(
+            req.message, session_id, execution_env=req.execution_env or "local"
+        )
         try:
             yield {"event": "session", "data": session_id}
-            async for ev in _runtime.stream_events(
-                req.message, session_id, execution_env=req.execution_env or "local"
-            ):
+            async for ev in runtime_stream:
                 # 单写入协程保持事件顺序，同时不让数据库提交延迟 SSE 正文。
                 event_queue.put_nowait(ev)
+                if ev.get("event") == "phase":
+                    phase = _event_payload(ev)
+                    phase_id = phase.get("id")
+                    if phase_id:
+                        if phase.get("status") in {"ok", "failed"}:
+                            open_phase_ids.discard(phase_id)
+                        else:
+                            open_phase_ids.add(phase_id)
+                elif ev.get("event") == "worker_end":
+                    worker = _event_payload(ev)
+                    terminal_seen = terminal_seen or (
+                        worker.get("worker") == "agent"
+                        and worker.get("task_id") == "agent"
+                    )
                 yield ev
         finally:
+            if not terminal_seen:
+                close_task = asyncio.create_task(runtime_stream.aclose())
+                try:
+                    await asyncio.wait_for(asyncio.shield(close_task), timeout=2)
+                except TimeoutError:
+                    close_task.cancel()
+                    log.warning("chat.runtime_close.timeout", session_id=session_id)
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:  # noqa: BLE001 — 终止事件仍必须持久化
+                    log.warning(
+                        "chat.runtime_close.failed",
+                        session_id=session_id,
+                        error=str(exc)[:120],
+                    )
+                for event in _abort_events(open_phase_ids):
+                    event_queue.put_nowait(event)
             event_queue.put_nowait(None)
             try:
                 await asyncio.wait_for(asyncio.shield(writer), timeout=5)

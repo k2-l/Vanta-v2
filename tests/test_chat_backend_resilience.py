@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
+os.environ.setdefault("ANTHROPIC_API_KEY", "test-only-model-key")
+
 from harness.app.main import create_app, ensure_workspace
 from harness.app.schemas import HealthResponse
 from harness.core.capabilities.memory import automatic_memory_available, recall_as_context
@@ -151,6 +153,91 @@ class RunHistoryTests(unittest.IsolatedAsyncioTestCase):
         publish.assert_awaited_once()
         upsert.assert_awaited_once_with("agent", "session-1", event_data := json.loads(event["data"]))
         self.assertEqual(event_data["status"], "running")
+
+    async def test_disconnected_chat_closes_runtime_and_persists_terminal_events(self) -> None:
+        closed = asyncio.Event()
+
+        async def stream_events(*_args, **_kwargs):
+            try:
+                yield {
+                    "event": "phase",
+                    "data": json.dumps(
+                        {"type": "phase", "id": "agent:worker", "status": "running"}
+                    ),
+                }
+                await asyncio.Future()
+            finally:
+                closed.set()
+
+        with (
+            patch("harness.routes.chat.db.get_session", new=AsyncMock(return_value=object())),
+            patch("harness.routes.chat._runtime.stream_events", side_effect=stream_events),
+            patch("harness.routes.chat._record_runtime_event", new=AsyncMock()) as record,
+        ):
+            from harness.app.schemas import ChatRequest
+            from harness.routes.chat import chat
+
+            response = await chat(ChatRequest(message="hello", session_id="session-1"), {})
+            iterator = response.body_iterator
+            await anext(iterator)  # session
+            await anext(iterator)  # running phase
+            waiting = asyncio.create_task(anext(iterator))
+            await asyncio.sleep(0)
+            waiting.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await waiting
+
+        self.assertTrue(closed.is_set())
+        events = [call.args[1] for call in record.await_args_list]
+        phase_payloads = [
+            json.loads(event["data"]) for event in events if event["event"] == "phase"
+        ]
+        self.assertTrue(
+            any(
+                phase["id"] == "agent:worker" and phase["status"] == "failed"
+                for phase in phase_payloads
+            )
+        )
+        self.assertTrue(any(event["event"] == "worker_end" for event in events))
+
+    async def test_subagent_worker_end_does_not_hide_disconnect_failure(self) -> None:
+        async def stream_events(*_args, **_kwargs):
+            yield {
+                "event": "worker_end",
+                "data": json.dumps(
+                    {
+                        "type": "worker_end",
+                        "worker": "researcher",
+                        "status": "ok",
+                        "summary": "done",
+                        "task_id": "sub-1",
+                    }
+                ),
+            }
+            await asyncio.Future()
+
+        with (
+            patch("harness.routes.chat.db.get_session", new=AsyncMock(return_value=object())),
+            patch("harness.routes.chat._runtime.stream_events", side_effect=stream_events),
+            patch("harness.routes.chat._record_runtime_event", new=AsyncMock()) as record,
+        ):
+            from harness.app.schemas import ChatRequest
+            from harness.routes.chat import chat
+
+            response = await chat(ChatRequest(message="hello", session_id="session-1"), {})
+            iterator = response.body_iterator
+            await anext(iterator)  # session
+            await anext(iterator)  # sub-agent worker_end
+            await iterator.aclose()
+
+        root_end_events = [
+            json.loads(call.args[1]["data"])
+            for call in record.await_args_list
+            if call.args[1]["event"] == "worker_end"
+        ]
+        self.assertTrue(
+            any(event["task_id"] == "agent" and event["status"] == "failed" for event in root_end_events)
+        )
 
 
 class ApprovalHistoryTests(unittest.IsolatedAsyncioTestCase):

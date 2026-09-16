@@ -13,7 +13,7 @@ harness/  Python / FastAPI (:8765)   编排、对话、管理 API 与容器/podm
 workspace/                           Agent / Skill 文件及工具工作目录
 ```
 
-单一 Python 后端 + PostgreSQL，JWT（HS256）鉴权（harness 用 `[auth] secret` 签发/校验 token）。
+单一 Python 后端 + PostgreSQL，JWT（HS256）鉴权（harness 用 `HARNESS_AUTH_SECRET` 签发/校验 token）。
 
 ---
 
@@ -29,7 +29,9 @@ workspace/                           Agent / Skill 文件及工具工作目录
 
 ## 快速启动
 
-配置集中在 `data/config.toml`（填写 `[anthropic] api_key`、`[auth] password/secret`、`[database] url` 等）。
+非敏感配置集中在 `data/config.toml`；认证凭据必须通过环境变量提供：
+`HARNESS_AUTH_PASSWORD` 与 `HARNESS_AUTH_SECRET`（后者建议使用 `openssl rand -hex 32` 生成）。
+前端写入的运行时覆盖保存到被 Git 忽略的 `data/config.local.json`。
 基本对话只依赖模型服务和 PostgreSQL；Qdrant 是知识库与可选长期记忆的向量服务，
 未配置 `[qdrant]` 时自动记忆/召回会跳过，不影响回答落库和 SSE 完成。
 
@@ -57,7 +59,7 @@ cd desktop && npm install && npm run tauri:dev
 | `harness/tools/` | 工具接入协议：工具基类·注册表·统一来源协议（`ToolSource`）；builtin/{cmd,security,web,orchestration} · mcp · sources/plugin |
 | `harness/app/` + `harness/main.py` | FastAPI 装配 + 启动入口 |
 | `workspace/` | Agent / Skill Markdown 与受控工具工作目录 |
-| `data/` | `config.toml` 运行时配置（向量库用 Qdrant Cloud，无本地 chroma） |
+| `data/` | `config.toml` 安全默认配置；`config.local.json` 为不入库的运行时覆盖 |
 
 ---
 
@@ -85,13 +87,16 @@ disable-model-invocation: false
 
 ## 关键配置
 
-以 `data/config.toml` 为主；同名 `HARNESS_*` 环境变量可覆盖。
+以 `data/config.toml` 为主；所有凭据只允许通过环境变量提供。
 
 | 配置 | 说明 |
 |------|------|
-| `[anthropic] api_key` | LLM 凭据；第三方兼容服务再加 `base_url` |
-| `[auth] password` | 登录密码 |
-| `[auth] secret` | JWT 签名密钥 |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` | Anthropic 协议 LLM 凭据 |
+| `OPENAI_API_KEY` | OpenAI 协议 LLM 凭据 |
+| `HARNESS_AUTH_PASSWORD` | 登录密码（禁止提交到仓库） |
+| `HARNESS_AUTH_SECRET` | JWT 签名密钥，至少 32 字节（禁止提交到仓库） |
+| `EMBEDDING_API_KEY` / `RERANK_API_KEY` | 语义检索与重排凭据 |
+| `QDRANT_API_KEY` / `GITHUB_TOKEN` / `SEARCH_API_KEY` | 向量库、GitHub 与搜索服务凭据 |
 | `[database] url` | PostgreSQL DSN |
 | `[models] high/mid/low` | 三档模型（推理 / 默认 / 摘要标题） |
 | `[paths] suite_dir` | workspace 套件根；相对路径按仓库根解析，启动时创建 agents/skills 子目录；留空默认 `workspace/` |

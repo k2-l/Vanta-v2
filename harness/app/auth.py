@@ -1,7 +1,7 @@
 """单用户 JWT 鉴权 + 登录限流。
 
 设计：
-  - 密码：HARNESS_AUTH_PASSWORD（.env 明文，secrets.compare_digest 常时比较）
+  - 密码：HARNESS_AUTH_PASSWORD（仅环境变量，secrets.compare_digest 常时比较）
   - Token：HS256 JWT，HARNESS_AUTH_SECRET 作为签名密钥
   - 有效期：默认 7 天（auth_token_ttl_hours）
   - 限流：每 IP 每分钟 N 次登录尝试，进程内令牌桶（重启重置）
@@ -53,12 +53,12 @@ def _ensure_configured() -> None:
     if not s.auth_password:
         raise HTTPException(
             status_code=503,
-            detail="服务未配置 auth.password（请在 data/config.toml 设置后重启）",
+            detail="服务未配置 HARNESS_AUTH_PASSWORD 环境变量",
         )
-    if not s.auth_secret:
+    if not s.auth_secret or len(s.auth_secret.encode("utf-8")) < 32:
         raise HTTPException(
             status_code=503,
-            detail="服务未配置 auth.secret（请在 data/config.toml 设置后重启）",
+            detail="HARNESS_AUTH_SECRET 未配置或少于 32 字节",
         )
 
 

@@ -150,18 +150,32 @@ class SessionHandoffTests(unittest.IsolatedAsyncioTestCase):
             "ORDER BY messages.created_at ASC, messages.id ASC", str(checkpointed.statements[1])
         )
 
+        interrupted = _FakeDbSession()
+        with patch.object(db, "session_factory", return_value=lambda: interrupted):
+            await db.mark_interrupted_turns()
+        self.assertIn(
+            "ORDER BY messages.created_at DESC, messages.id DESC",
+            str(interrupted.statements[0]),
+        )
+
     async def test_preview_stops_stream_and_closes_it_at_token_budget(self):
         upto = datetime(2026, 9, 15, 12, tzinfo=UTC)
         row = SimpleNamespace(id="s")
         closed = False
         consumed = 0
 
-        async def source(_session_id, _upto):
+        oldest = upto - timedelta(minutes=2)
+
+        async def source(_session_id, _after, _upto):
             nonlocal closed, consumed
             try:
-                for content in ("new", "old", "ignored"):
+                for index, content in enumerate(("old", "new", "ignored")):
                     consumed += 1
-                    yield SimpleNamespace(content=content, role="user")
+                    yield SimpleNamespace(
+                        content=content,
+                        role="user",
+                        created_at=oldest + timedelta(minutes=index),
+                    )
             finally:
                 closed = True
 
@@ -174,7 +188,7 @@ class SessionHandoffTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(sessions.db, "get_session", new=AsyncMock(return_value=row)),
             patch.object(sessions.db, "latest_message_at", new=AsyncMock(return_value=upto)),
-            patch.object(sessions.db, "messages_upto_desc", side_effect=source),
+            patch.object(sessions.db, "uncompacted_messages_upto", side_effect=source),
             patch.object(sessions.db, "get_compaction", new=AsyncMock(return_value=("", None))),
             patch.object(sessions, "get_settings", return_value=settings),
             patch.object(sessions, "count_tokens", side_effect=len),
@@ -187,9 +201,49 @@ class SessionHandoffTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(consumed, 2)
         self.assertTrue(closed)
         self.assertEqual(preview.messages, 1)
-        self.assertEqual(preview.upto, upto)
-        self.assertIn("new", summarize.await_args.args[0])
-        self.assertNotIn("old", summarize.await_args.args[0])
+        self.assertEqual(preview.upto, oldest)
+        self.assertIn("old", summarize.await_args.args[0])
+        self.assertNotIn("new", summarize.await_args.args[0])
+
+    async def test_preview_keeps_timestamp_ties_together(self):
+        boundary = datetime(2026, 9, 15, 12, tzinfo=UTC)
+
+        async def source(_session_id, _after, _upto):
+            yield SimpleNamespace(content="a", role="user", created_at=boundary)
+            yield SimpleNamespace(content="b", role="assistant", created_at=boundary)
+            yield SimpleNamespace(
+                content="c", role="user", created_at=boundary + timedelta(seconds=1)
+            )
+
+        settings = SimpleNamespace(
+            compaction_input_max_tokens=1,
+            model_low="model",
+            model_low_provider="provider",
+            summarize_max_tokens=100,
+        )
+        with (
+            patch.object(sessions.db, "get_session", new=AsyncMock(return_value=object())),
+            patch.object(
+                sessions.db,
+                "latest_message_at",
+                new=AsyncMock(return_value=boundary + timedelta(seconds=1)),
+            ),
+            patch.object(sessions.db, "uncompacted_messages_upto", side_effect=source),
+            patch.object(sessions.db, "get_compaction", new=AsyncMock(return_value=("", None))),
+            patch.object(sessions, "get_settings", return_value=settings),
+            patch.object(sessions, "count_tokens", side_effect=len),
+            patch.object(sessions, "resolve_provider", return_value=object()),
+            patch.object(
+                sessions, "compact_session_history", new=AsyncMock(return_value="摘要")
+            ) as summarize,
+        ):
+            preview = await sessions.compress_preview("s")
+
+        self.assertEqual(preview.messages, 2)
+        self.assertEqual(preview.upto, boundary)
+        self.assertIn("a", summarize.await_args.args[0])
+        self.assertIn("b", summarize.await_args.args[0])
+        self.assertNotIn("c", summarize.await_args.args[0])
 
     async def test_commit_rejects_empty_history(self):
         with (

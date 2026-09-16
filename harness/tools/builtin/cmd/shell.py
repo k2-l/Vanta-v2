@@ -164,6 +164,9 @@ async def _run_in_sandbox(exec_env, command: str, timeout: float) -> ToolResult:
 class ShellExecTool(Tool):
     name = "Bash"
     category = "exec"
+    requires_approval = True
+    approval_message = "确认执行 Bash 命令：{command}？"
+    risk_level = "high"
     description = (
         "经 shell 执行命令并返回输出（支持管道、重定向、变量展开、复合命令）。"
         "命令的放行 / 审批 / 拒绝由权限策略统一管控；host 上在工作目录内执行。"

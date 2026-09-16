@@ -12,6 +12,9 @@ from __future__ import annotations
 from contextvars import ContextVar
 from dataclasses import dataclass
 
+from harness.infra.logging import log
+from harness.security.engagement import Engagement, is_engagement_active
+
 
 @dataclass
 class ExecEnv:
@@ -83,3 +86,55 @@ def apply_engagement(
             session_id=cur.session_id if session_id is None else session_id,
         )
     )
+
+
+async def apply_active_engagement(session_id: str) -> None:
+    """加载并验证会话授权后叠加到 ExecEnv；失效、缺失或异常时一律清空。"""
+    if not session_id:
+        apply_engagement("", session_id="")
+        return
+
+    try:
+        from harness.infra.db import (
+            get_active_engagement_id,
+            get_engagement,
+            set_active_engagement,
+        )
+
+        engagement_id = await get_active_engagement_id(session_id)
+        record = await get_engagement(engagement_id) if engagement_id else None
+        if record is None:
+            apply_engagement("", session_id=session_id)
+            return
+
+        active, reason = is_engagement_active(
+            Engagement(
+                id=record.id,
+                name=record.name,
+                scope_targets=list(record.scope_targets or ()),
+                status=record.status,
+                authorization_ref=record.authorization_ref or "",
+                starts_at=record.starts_at,
+                ends_at=record.ends_at,
+            )
+        )
+        if not active:
+            await set_active_engagement(session_id, "")
+            log.warning(
+                "tool_node.engagement_inactive",
+                session_id=session_id,
+                engagement_id=record.id,
+                reason=reason,
+            )
+            apply_engagement("", session_id=session_id)
+            return
+
+        apply_engagement(
+            record.id,
+            tuple(record.scope_targets or ()),
+            record.dns_resolver_ip or "",
+            session_id=session_id,
+        )
+    except Exception as exc:  # noqa: BLE001 -- 授权加载失败必须 fail-closed
+        log.warning("tool_node.engagement_load_failed", session_id=session_id, exc=str(exc)[:200])
+        apply_engagement("", session_id=session_id)

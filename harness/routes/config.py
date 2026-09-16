@@ -14,10 +14,8 @@ router = APIRouter(tags=["config"])
 
 # 允许前端读写的字段白名单
 EDITABLE: set[str] = {
-    # 模型接口 — Anthropic
-    "anthropic_api_key", "anthropic_auth_token", "anthropic_base_url",
-    # 模型接口 — OpenAI（多 provider）
-    "openai_api_key", "openai_base_url",
+    # 模型接口（凭据只通过环境变量配置）
+    "anthropic_base_url", "openai_base_url",
     # 三档模型 + 各档 provider 覆盖（手工跨 provider 选择）
     "model_high", "model_mid", "model_low",
     "default_provider", "model_high_provider", "model_mid_provider", "model_low_provider",
@@ -38,16 +36,6 @@ EDITABLE: set[str] = {
     "tool_timeout_seconds", "tool_concurrency",
 }
 
-# 敏感字段：GET 时脱敏返回，PATCH 时原样存储
-SENSITIVE: set[str] = {"anthropic_api_key", "anthropic_auth_token", "openai_api_key"}
-
-
-def _mask(value: str | None) -> str:
-    if not value:
-        return ""
-    return "••••" + value[-4:] if len(value) > 4 else "••••••••"
-
-
 @router.get("/config")
 async def get_config(
     _: Annotated[dict, Depends(require_auth)],
@@ -55,8 +43,7 @@ async def get_config(
     s = get_settings()
     result: dict[str, Any] = {}
     for key in EDITABLE:
-        val = getattr(s, key, None)
-        result[key] = _mask(val) if key in SENSITIVE and isinstance(val, str) and val else val
+        result[key] = getattr(s, key, None)
     # 附带计算属性（只读）
     result["context_compression_threshold"] = s.context_compression_threshold
     return result

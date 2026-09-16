@@ -1,5 +1,4 @@
 [anthropic]
-api_key  = "xxxxx"
 base_url = "https://api.deepseek.com/anthropic"
 
 [server]
@@ -15,8 +14,7 @@ cors_origins = [
 ]
 
 [auth]
-password         = "vanta@123456"
-secret           = "eeecc978b044e28c6b3c8a7ab1a22031ce51cd46027cdeb5550bca77df6d8f9e"
+# 凭据只通过 HARNESS_AUTH_PASSWORD / HARNESS_AUTH_SECRET 环境变量提供，禁止提交。
 token_ttl_hours  = 4
 login_rate_limit = 5
 
@@ -36,9 +34,11 @@ suite_dir    = "workspace"
 [context]
 enable_prompt_cache = false
 
+[limits]
+tool_concurrency = 5
+
 [embedding]
 base_url = "https://ai.gitee.com/v1"
-api_key = "xxxxx"
 model = "Qwen3-Embedding-8B"
 
 [rerank]

@@ -76,6 +76,21 @@ _GLOBAL_SEM: asyncio.Semaphore | None = None
 _GLOBAL_SEM_LOCK: asyncio.Lock = asyncio.Lock()
 
 
+def _failed_phase_events(current_agent: str, pending: set[str]) -> list[PhaseEvent]:
+    """为失败运行生成所有未收尾阶段的终态事件。"""
+    phase_ids = {"agent", *pending}
+    if current_agent:
+        phase_ids.add(f"agent:{current_agent}")
+    return [
+        PhaseEvent(
+            id=phase_id,
+            label="执行失败" if phase_id == "agent" else phase_id,
+            status="failed",
+        )
+        for phase_id in sorted(phase_ids)
+    ]
+
+
 def _session_lock(session_id: str) -> asyncio.Lock:
     lock = _SESSION_LOCKS.get(session_id)
     if lock is None:
@@ -740,6 +755,10 @@ class AgentRuntime:
         _status = (
             "ok" if _graph_ok and not _terminal_error and final_text.strip() else "failed"
         )
+        if _status == "failed":
+            for phase_event in _failed_phase_events(_current_agent, _pending_sub):
+                yield event_to_sse(phase_event)
+            _pending_sub.clear()
         yield event_to_sse(
             WorkerEnd(worker="agent", status=_status, summary=final_text[:100], task_id="agent")
         )

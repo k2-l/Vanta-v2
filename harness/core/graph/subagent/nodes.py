@@ -40,7 +40,7 @@ from harness.core.graph.tool_exec import (
 from harness.infra.logging import log
 from harness.infra.metrics import inc as _inc
 from harness.infra.settings import get_settings
-from harness.tools.exec_context import apply_exec_env
+from harness.tools.exec_context import apply_active_engagement, apply_exec_env
 from harness.tools.registry import registry
 
 from .context import _agent_depth, bind_tool_call_id
@@ -270,6 +270,7 @@ def _build_tool_node(allowed_names: set[str] | None):
             return {}
 
         apply_exec_env(state.get("execution_env"))
+        await apply_active_engagement(state.get("session_id", ""))
 
         # 从 state 同步深度到 ContextVar，确保嵌套 run_agent 调用读取正确深度
         current_depth = state.get("agent_depth", 0)

@@ -6,11 +6,12 @@ article 抓回来的是原始 HTML，这里再过一层 html_to_text 转纯文�
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from harness.infra import fetcher
 from harness.tools.base import Tool, ToolResult
-from harness.tools.builtin.web._net import html_to_text, safe_public_url
+from harness.tools.builtin.web._net import html_to_text, resolve_public_url
 from harness.tools.registry import register
 
 _DEFAULT_MAX_CHARS = 8_000
@@ -48,7 +49,7 @@ class WebFetchTool(Tool):
         if not url:
             return ToolResult.fail(error="缺少 url", error_code="INVALID_ARGS")
 
-        ok, reason = safe_public_url(url)
+        ok, reason, resolved_ips = await asyncio.to_thread(resolve_public_url, url)
         if not ok:
             return ToolResult.fail(
                 error=f"URL 未通过安全校验：{reason}", error_code="PERMISSION_DENIED"
@@ -57,7 +58,7 @@ class WebFetchTool(Tool):
         limit = max(500, min(int(max_chars or _DEFAULT_MAX_CHARS), _HARD_MAX_CHARS))
         source_type = fetcher.sniff_source_type(url)
         try:
-            result = await fetcher.fetch(url, source_type)
+            result = await fetcher.fetch(url, source_type, resolved_ips=resolved_ips)
         except Exception as exc:  # noqa: BLE001
             return ToolResult.fail(
                 error=f"抓取失败（{source_type}）：{type(exc).__name__}: {str(exc)[:300]}",

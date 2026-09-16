@@ -100,26 +100,32 @@ async def compress_preview(session_id: str):
     用户可编辑摘要后再调 commit 生效。原文一律保留在 DB，可回退。
     """
     await _require_session(session_id)
-    upto = await db.latest_message_at(session_id)
-    if upto is None:
+    snapshot_upto = await db.latest_message_at(session_id)
+    if snapshot_upto is None:
         raise HTTPException(400, "该会话没有可压缩的历史消息")
 
     st = get_settings()
+    prev_summary, previous_upto = await db.get_compaction(session_id)
 
-    # 从最近向前读取，在达到预算时关闭游标。
+    # 从上一个检查点向后读取最老的一段，确保提交后不会跳过未进入摘要的消息。
+    # 同一时间戳的消息必须一起纳入，避免仅用 datetime 检查点时漏掉并列记录。
     kept: list = []
     used = 0
-    async with aclosing(db.messages_upto_desc(session_id, upto)) as messages:
+    async with aclosing(
+        db.uncompacted_messages_upto(session_id, previous_upto, snapshot_upto)
+    ) as messages:
         async for message in messages:
             tokens = count_tokens(message.content)
-            if kept and used + tokens > st.compaction_input_max_tokens:
+            over_budget = kept and used + tokens > st.compaction_input_max_tokens
+            if over_budget and message.created_at != kept[-1].created_at:
                 break
             kept.append(message)
             used += tokens
-    kept.reverse()
+
+    if not kept:
+        raise HTTPException(400, "该会话没有新的可压缩历史消息")
 
     transcript = "\n\n".join(f"{_ROLE_LABELS.get(m.role, m.role)}：{m.content}" for m in kept)
-    prev_summary, _ = await db.get_compaction(session_id)
 
     try:
         summary = await compact_session_history(
@@ -134,7 +140,7 @@ async def compress_preview(session_id: str):
 
     return CompressPreviewOut(
         summary=summary,
-        upto=upto,
+        upto=kept[-1].created_at,
         messages=len(kept),
         tokens_before=used,
         tokens_after=count_tokens(summary),

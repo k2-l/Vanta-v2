@@ -1,6 +1,5 @@
 """集中配置。所有可调参数在此声明，运行时通过 get_settings() 获取。"""
 
-import json
 import os
 import tomllib
 from functools import lru_cache
@@ -11,6 +10,34 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from harness.contracts.models import ProviderName, normalize_provider_name
+from harness.infra import config_store
+
+_ENV_ONLY_SETTINGS = frozenset(
+    {
+        "anthropic_api_key",
+        "anthropic_auth_token",
+        "openai_api_key",
+        "auth_password",
+        "auth_secret",
+        "harness_auth_password",
+        "harness_auth_secret",
+        "embedding_api_key",
+        "rerank_api_key",
+        "qdrant_api_key",
+        "github_token",
+        "search_api_key",
+    }
+)
+_TOML_CREDENTIAL_FIELDS = {
+    "anthropic": frozenset({"api_key", "auth_token"}),
+    "openai": frozenset({"api_key"}),
+    "auth": frozenset({"password", "secret"}),
+    "embedding": frozenset({"api_key"}),
+    "rerank": frozenset({"api_key"}),
+    "qdrant": frozenset({"api_key"}),
+    "github": frozenset({"token"}),
+    "search": frozenset({"api_key"}),
+}
 
 
 class TomlConfigSource(PydanticBaseSettingsSource):
@@ -24,24 +51,28 @@ class TomlConfigSource(PydanticBaseSettingsSource):
         try:
             with open(toml_path, "rb") as f:
                 data = tomllib.load(f)
-        except Exception:
-            return {}
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            raise ValueError(f"基础配置损坏，拒绝使用默认值继续启动：{toml_path}") from exc
+
+        for section_name, credential_fields in _TOML_CREDENTIAL_FIELDS.items():
+            section = data.get(section_name, {})
+            found = credential_fields.intersection(section) if isinstance(section, dict) else set()
+            if found:
+                names = ", ".join(sorted(found))
+                raise ValueError(
+                    f"基础配置禁止包含凭据字段 [{section_name}] {names}；"
+                    "请改用环境变量"
+                )
 
         result: dict[str, Any] = {}
 
-        # [anthropic] 节 — 映射到有 alias 的字段
+        # 凭据只允许来自环境变量；TOML 只承载非敏感端点。
         anthropic = data.get("anthropic", {})
-        if "api_key" in anthropic:
-            result["ANTHROPIC_API_KEY"] = anthropic["api_key"]
-        if "auth_token" in anthropic:
-            result["ANTHROPIC_AUTH_TOKEN"] = anthropic["auth_token"]
         if "base_url" in anthropic:
             result["ANTHROPIC_BASE_URL"] = anthropic["base_url"]
 
-        # [openai] 节 — OpenAI 协议凭据（含任意 OpenAI 兼容端点）
+        # [openai] 节 — OpenAI 协议端点（含任意兼容端点）
         openai = data.get("openai", {})
-        if "api_key" in openai:
-            result["OPENAI_API_KEY"] = openai["api_key"]
         if "base_url" in openai:
             result["OPENAI_BASE_URL"] = openai["base_url"]
 
@@ -60,12 +91,8 @@ class TomlConfigSource(PydanticBaseSettingsSource):
         if "ssl_keyfile" in server:
             result["ssl_keyfile"] = server["ssl_keyfile"]
 
-        # [auth] 节 — 有 alias 的用 alias，其余直接用字段名
+        # [auth] 节只承载非敏感策略；密码和 JWT 密钥仅允许来自环境变量。
         auth = data.get("auth", {})
-        if "password" in auth:
-            result["HARNESS_AUTH_PASSWORD"] = auth["password"]
-        if "secret" in auth:
-            result["HARNESS_AUTH_SECRET"] = auth["secret"]
         if "token_ttl_hours" in auth:
             result["auth_token_ttl_hours"] = auth["token_ttl_hours"]
         if "login_rate_limit" in auth:
@@ -95,8 +122,6 @@ class TomlConfigSource(PydanticBaseSettingsSource):
             result["embedding_model"] = embedding["model"]
         if "base_url" in embedding:
             result["embedding_base_url"] = embedding["base_url"]
-        if "api_key" in embedding:
-            result["embedding_api_key"] = embedding["api_key"]
         rerank = data.get("rerank", {})
         if "enabled" in rerank:
             result["rerank_enabled"] = rerank["enabled"]
@@ -106,27 +131,16 @@ class TomlConfigSource(PydanticBaseSettingsSource):
             result["rerank_recall_n"] = rerank["recall_n"]
         if "base_url" in rerank:
             result["rerank_base_url"] = rerank["base_url"]
-        if "api_key" in rerank:
-            result["rerank_api_key"] = rerank["api_key"]
 
         # [qdrant] 节 — 向量存储（Qdrant Cloud，云端唯一）
         qdrant = data.get("qdrant", {})
         if "url" in qdrant:
             result["qdrant_url"] = qdrant["url"]
-        if "api_key" in qdrant:
-            result["qdrant_api_key"] = qdrant["api_key"]
-
-        # [github] 节 — GitHub REST API 访问令牌（fetcher.py 抓 GitHub 带认证）
-        github = data.get("github", {})
-        if "token" in github:
-            result["github_token"] = github["token"]
 
         # [search] 节 — 联网搜索工具（WebSearch）后端
         search = data.get("search", {})
         if "provider" in search:
             result["search_provider"] = search["provider"]
-        if "api_key" in search:
-            result["search_api_key"] = search["api_key"]
         if "base_url" in search:
             result["search_base_url"] = search["base_url"]
 
@@ -340,27 +354,27 @@ class Settings(BaseSettings):
     # 云端唯一、无本地兜底：embedding_api_key 留空时 vector.py 直接 raise。
     embedding_model: str = "Qwen3-Embedding-8B"        # 实测输出 1024 维
     embedding_base_url: str = "https://ai.gitee.com/v1"
-    embedding_api_key: str = ""
+    embedding_api_key: str = Field(default="", alias="EMBEDDING_API_KEY")
     rerank_enabled: bool = False
     rerank_model: str = "bge-reranker-v2-m3"
     rerank_recall_n: int = 20                          # 精排前的召回放大数
     # rerank 的 base_url/api_key 留空则复用 embedding 的（同一 Gitee 端点，免重复配置）；
     # 仅当 rerank 想走不同 provider 时才在 [rerank] 显式覆盖。
     rerank_base_url: str = ""
-    rerank_api_key: str = ""
+    rerank_api_key: str = Field(default="", alias="RERANK_API_KEY")
 
     # 向量存储（harness/infra/vector）：Qdrant Cloud。
     # 云端唯一、无本地兜底：qdrant_url 或 qdrant_api_key 留空时 vector.py 直接 raise。
     qdrant_url: str = ""
-    qdrant_api_key: str = ""
+    qdrant_api_key: str = Field(default="", alias="QDRANT_API_KEY")
 
     # GitHub REST API 访问令牌（harness/infra/fetcher 抓 GitHub 带认证）。
     # 留空则匿名访问（限流较低，public repo 足够用）；填写后提升限流额度。
-    github_token: str = ""
+    github_token: str = Field(default="", alias="GITHUB_TOKEN")
 
     # WebSearch 检索后端：默认 duckduckgo（免费无 key）；配 provider=tavily + api_key 更稳。
     search_provider: str = "duckduckgo"  # duckduckgo | tavily
-    search_api_key: str = ""
+    search_api_key: str = Field(default="", alias="SEARCH_API_KEY")
     search_base_url: str = ""  # 可选：自建/代理端点（如 tavily 兼容网关）
 
     # 三档模型：在 data/config.toml 中按需覆盖（[models] high / mid / low）
@@ -503,7 +517,7 @@ class Settings(BaseSettings):
     # 慢请求日志阈值（秒）；SSE/WS 路由自动豁免
     slow_request_threshold_sec: float = 30.0
 
-    # 定价快照：USD per 1M tokens（input, output）。第三方服务可在 config.json 覆盖。
+    # 定价快照：USD per 1M tokens（input, output）。第三方服务可在 config.local.json 覆盖。
     # 格式：{model_id: [input_price, output_price]}（TOML/JSON 不支持 tuple，使用 list）
     price_per_m_tokens: dict[str, list[float]] = Field(
         default={
@@ -534,9 +548,9 @@ class Settings(BaseSettings):
         if not (self.anthropic_api_key or self.anthropic_auth_token or self.openai_api_key):
             raise ValueError(
                 "必须至少配置一个模型 provider 的凭据。\n"
-                "  - Anthropic：[anthropic] api_key（官方/第三方兼容 + base_url）或 auth_token（Bearer/OAuth）\n"
-                "  - OpenAI：[openai] api_key（+ 可选 base_url 指向兼容端点）\n"
-                "  - 或用环境变量 ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / OPENAI_API_KEY 覆盖"
+                "  - Anthropic：ANTHROPIC_API_KEY 或 ANTHROPIC_AUTH_TOKEN（Bearer/OAuth）\n"
+                "  - OpenAI：OPENAI_API_KEY\n"
+                "  - 非敏感 base_url 可在 data/config.toml 中配置"
             )
         full_tree_invocations = sum(
             self.max_agent_delegations_per_agent**level
@@ -553,14 +567,13 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     s = Settings()  # type: ignore[call-arg]
-    # 叠加 data/config.json 中的运行时覆盖（前端配置写入）
-    try:
-        p = Path(s.data_dir) / "config.json"
-        if p.exists():
-            overrides = json.loads(p.read_text(encoding="utf-8"))
-            if overrides:
-                # model_copy(update=...) 不执行字段约束；重新校验，避免 0/负数配置潜伏到运行期。
-                s = Settings.model_validate({**s.model_dump(), **overrides})
-    except Exception:
-        pass
+    # 叠加被 Git 忽略的本地运行时覆盖（前端配置写入）
+    overrides = {
+        key: value
+        for key, value in config_store.load(s.data_dir).items()
+        if key.lower() not in _ENV_ONLY_SETTINGS
+    }
+    if overrides:
+        # model_copy(update=...) 不执行字段约束；重新校验，避免 0/负数配置潜伏到运行期。
+        s = Settings.model_validate({**s.model_dump(), **overrides})
     return s

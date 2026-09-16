@@ -27,7 +27,7 @@ from harness.core.graph.tool_exec import (
 from harness.infra.logging import log
 from harness.infra.metrics import inc as _inc
 from harness.infra.settings import get_settings
-from harness.tools.exec_context import apply_engagement, apply_exec_env
+from harness.tools.exec_context import apply_active_engagement, apply_exec_env
 
 CACHEABLE_TOOLS: frozenset[str] = frozenset({"knowledge"})
 _TOOL_CACHE_TTL = 120.0  # seconds
@@ -149,31 +149,6 @@ async def _execute_tool_call(
 # ─── 节点 3：tool ────────────────────────────────────────────────────
 
 
-async def _apply_active_engagement(session_id: str) -> None:
-    """把会话的活跃 engagement（scope）叠加到 ExecEnv，供工具/沙箱读取当前授权范围。
-
-    fail-safe：session 无 / 无活跃 engagement / 加载失败 → 清为"无 engagement"（主动扫描
-    类动作因此被拒，宁紧勿松）。仅 PK 查询，开销小。
-    """
-    if not session_id:
-        apply_engagement("", session_id="")
-        return
-    try:
-        from harness.infra.db import get_active_engagement_id, get_engagement
-
-        eid = await get_active_engagement_id(session_id)
-        eng = await get_engagement(eid) if eid else None
-        if eng is None:
-            apply_engagement("", session_id=session_id)
-            return
-        apply_engagement(
-            eng.id, tuple(eng.scope_targets or ()), eng.dns_resolver_ip or "", session_id=session_id
-        )
-    except Exception as exc:  # noqa: BLE001 —— 加载失败 fail-safe 到"无 engagement"，不阻断执行
-        log.warning("tool_node.engagement_load_failed", session_id=session_id, exc=str(exc)[:200])
-        apply_engagement("", session_id=session_id)
-
-
 async def tool_node(state: PenAgentState, config: RunnableConfig) -> dict:
     """执行最后一条 AI 消息中的所有 tool_call，并发运行。"""
     messages = state.get("messages", [])
@@ -189,7 +164,7 @@ async def tool_node(state: PenAgentState, config: RunnableConfig) -> dict:
     # Propagate execution environment to tools via ContextVar
     apply_exec_env(state.get("execution_env"))
     # 叠加会话的活跃 engagement（scope 门来源）——在 create_task 前设好，任务复制到该上下文
-    await _apply_active_engagement(state.get("session_id", ""))
+    await apply_active_engagement(state.get("session_id", ""))
 
     max_tc = _s.max_tool_calls_per_turn  # <=0 不限本轮工具数（仍受 tool_concurrency 约束）
     tool_calls = last.tool_calls[:max_tc] if max_tc > 0 else last.tool_calls

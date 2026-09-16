@@ -167,7 +167,7 @@ class WebSearchTool(Tool):
             if provider == "tavily":
                 if not settings.search_api_key:
                     return ToolResult.fail(
-                        error="search_provider=tavily 但未配置 search_api_key",
+                        error="search_provider=tavily 但未配置 SEARCH_API_KEY 环境变量",
                         error_code="CONFIG_ERROR",
                     )
                 results = await _search_tavily(query, n, settings.search_api_key, settings.search_base_url)
@@ -177,7 +177,8 @@ class WebSearchTool(Tool):
             return ToolResult.fail(
                 error=(
                     f"搜索失败（{provider}）：{type(exc).__name__}: {str(exc)[:200]}。"
-                    "若持续失败，可在 data/config.toml [search] 配置 provider=tavily + api_key。"
+                    "若持续失败，可在 data/config.toml [search] 配置 "
+                    "provider=tavily，并设置 SEARCH_API_KEY 环境变量。"
                 ),
                 error_code="SEARCH_FAILED",
             )
@@ -187,7 +188,8 @@ class WebSearchTool(Tool):
             if provider != "tavily":
                 hint = (
                     "（DuckDuckGo 免费源可能被限流/临时拦截；如需稳定检索，"
-                    "在 data/config.toml [search] 配置 provider=tavily + api_key）"
+                    "在 data/config.toml [search] 配置 provider=tavily，"
+                    "并设置 SEARCH_API_KEY 环境变量）"
                 )
             return ToolResult(ok=True, output=f"未搜到与「{query}」相关的结果。{hint}")
 

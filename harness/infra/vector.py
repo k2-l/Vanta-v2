@@ -148,10 +148,8 @@ def _get_embedding_fn() -> Any:
         s = get_settings()
         if not s.embedding_api_key:
             raise RuntimeError(
-                "未配置 embedding_api_key：需在 data/config.toml 的 [embedding] 配置 api_key"
-                "（云端唯一，无本地兜底）。\n"
-                "embedding_api_key is not configured: set api_key under [embedding] in "
-                "data/config.toml (cloud-only, no local fallback)."
+                "未配置 EMBEDDING_API_KEY 环境变量（云端唯一，无本地兜底）。\n"
+                "EMBEDDING_API_KEY is not configured (cloud-only, no local fallback)."
             )
         _embedding_fn = _APIEmbedding(
             s.embedding_model, s.embedding_base_url, s.embedding_api_key
@@ -183,10 +181,10 @@ def _get_reranker() -> Any:
         base_url = s.rerank_base_url or s.embedding_base_url
         if not api_key:
             raise RuntimeError(
-                "未配置 rerank api_key：在 data/config.toml 的 [embedding] 或 [rerank] 配置 api_key"
+                "未配置 RERANK_API_KEY 或 EMBEDDING_API_KEY 环境变量"
                 "（云端唯一，无本地兜底）。\n"
-                "rerank api_key is not configured: set api_key under [embedding] or [rerank] "
-                "in data/config.toml (cloud-only, no local fallback)."
+                "RERANK_API_KEY or EMBEDDING_API_KEY is not configured "
+                "(cloud-only, no local fallback)."
             )
         _reranker = _APIReranker(s.rerank_model, base_url, api_key)
         return _reranker
@@ -236,10 +234,11 @@ def _get_client_locked() -> Any:
     s = get_settings()
     if not s.qdrant_url or not s.qdrant_api_key:
         raise RuntimeError(
-            "未配置 qdrant_url/qdrant_api_key：需在 data/config.toml 的 [qdrant] 配置 "
-            "url 和 api_key（云端唯一，无本地兜底）。\n"
-            "qdrant_url/qdrant_api_key is not configured: set url and api_key under "
-            "[qdrant] in data/config.toml (cloud-only, no local fallback)."
+            "未配置 Qdrant：在 data/config.toml 的 [qdrant] 配置 url，"
+            "并通过 QDRANT_API_KEY 环境变量提供凭据"
+            "（云端唯一，无本地兜底）。\n"
+            "Qdrant is not configured: set [qdrant] url in data/config.toml and provide "
+            "QDRANT_API_KEY (cloud-only, no local fallback)."
         )
     from qdrant_client import QdrantClient
 

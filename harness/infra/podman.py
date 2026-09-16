@@ -88,8 +88,7 @@ async def create_container(
 ) -> str:
     """`podman create`（不启动）：`-t -i` 常驻以支持后续 exec（等价 docker run -dit），端口/env 映射。
 
-    返回 podman 容器 ID。名字被占用（孤儿：库记录丢了但容器还在）→ 强删旧的重建，保持幂等
-    （对齐 nexus podman.go：避免库/podman 不同步时调用方永远 500）。
+    返回 podman 容器 ID。同名冲突直接报错，绝不删除非本次请求创建的容器。
     """
     argv = ["create", "-t", "-i"]
     if name:
@@ -103,9 +102,6 @@ async def create_container(
         argv += command
 
     rc, out, err = await _podman(*argv, timeout=120)
-    if rc != 0 and name and "already in use" in err.lower():
-        await _podman("rm", "-f", name, timeout=30)
-        rc, out, err = await _podman(*argv, timeout=120)
     if rc != 0:
         raise RuntimeError(f"podman create {name!r} 失败：{err[:300]}")
     return out.strip().splitlines()[-1] if out.strip() else ""

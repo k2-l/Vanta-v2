@@ -563,7 +563,10 @@ async def mark_interrupted_turns() -> int:
     async with sf() as db:
         rn = (
             func.row_number()
-            .over(partition_by=Message.session_id, order_by=Message.created_at.desc())
+            .over(
+                partition_by=Message.session_id,
+                order_by=(Message.created_at.desc(), Message.id.desc()),
+            )
             .label("rn")
         )
         ranked = select(Message.session_id, Message.role, rn).subquery()
@@ -668,6 +671,30 @@ async def messages_upto_desc(session_id: str, upto: datetime) -> AsyncGenerator[
             select(Message)
             .where(Message.session_id == session_id, Message.created_at <= upto)
             .order_by(Message.created_at.desc(), Message.id.desc())
+            .execution_options(yield_per=100)
+        )
+        try:
+            async for message in result.scalars():
+                yield message
+        finally:
+            await result.close()
+
+
+async def uncompacted_messages_upto(
+    session_id: str,
+    after: datetime | None,
+    upto: datetime,
+) -> AsyncGenerator[Message, None]:
+    """按时间正序流式读取尚未压缩、且不晚于快照边界的消息。"""
+    sf = session_factory()
+    async with sf() as db:
+        conditions = [Message.session_id == session_id, Message.created_at <= upto]
+        if after is not None:
+            conditions.append(Message.created_at > after)
+        result = await db.stream(
+            select(Message)
+            .where(*conditions)
+            .order_by(Message.created_at.asc(), Message.id.asc())
             .execution_options(yield_per=100)
         )
         try:

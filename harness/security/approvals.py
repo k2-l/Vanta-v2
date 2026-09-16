@@ -218,11 +218,14 @@ async def request_approval(
         # shield 防止 wait_for 超时直接取消 Future；若 REST 已认领该请求，给持久化一次短暂宽限。
         return await asyncio.wait_for(asyncio.shield(fut), timeout=timeout)
     except TimeoutError:
+        if fut.done() and not fut.cancelled():
+            return fut.result()
         if call_id in _claimed:
             try:
                 return await asyncio.wait_for(asyncio.shield(fut), timeout=5.0)
             except TimeoutError:
-                pass
+                if fut.done() and not fut.cancelled():
+                    return fut.result()
         log.warning("approval.timeout", call_id=call_id, tool_name=tool_name, session_id=session_id)
         # 超时项不能随内存队列清理而消失：写入同一哈希链，供审批历史长期追溯。
         # 审计层维持 fail-open；工具执行仍在本函数中 fail-closed。
