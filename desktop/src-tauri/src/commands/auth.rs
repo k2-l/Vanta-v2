@@ -20,11 +20,35 @@ pub async fn auth_login(
     Ok(AuthSummary {
         authenticated: true,
         expires_at: Some(outcome.expires_at),
+        refresh_expires_at: Some(outcome.refresh_expires_at),
         user_label: None,
     })
 }
 
 #[tauri::command]
-pub fn auth_logout(connection_id: String) -> CmdResult<()> {
-    credentials::clear(&connection_id)
+pub async fn auth_refresh(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> CmdResult<AuthSummary> {
+    let base_url = state.connections.resolve_base_url(&connection_id)?;
+    let ca = state.connections.resolve_ca(&connection_id);
+    let outcome = backend_gateway::refresh(&base_url, &connection_id, ca.as_deref()).await?;
+    Ok(AuthSummary {
+        authenticated: true,
+        expires_at: Some(outcome.expires_at),
+        refresh_expires_at: Some(outcome.refresh_expires_at),
+        user_label: None,
+    })
+}
+
+#[tauri::command]
+pub async fn auth_logout(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> CmdResult<()> {
+    let base_url = state.connections.resolve_base_url(&connection_id)?;
+    let ca = state.connections.resolve_ca(&connection_id);
+    let revoke = backend_gateway::revoke_session(&base_url, &connection_id, ca.as_deref()).await;
+    let cleared = credentials::clear(&connection_id);
+    revoke.and(cleared)
 }

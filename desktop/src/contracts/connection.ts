@@ -71,6 +71,8 @@ export type ConnectionSession = {
 export type AuthSummary = {
   authenticated: boolean;
   expiresAt?: string;
+  /** 服务端可撤销登录会话的到期时间；刷新访问令牌不会延长此时间。 */
+  refreshExpiresAt?: string;
   userLabel?: string;
 };
 

@@ -12,7 +12,7 @@ import json
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from harness.app.auth import _verify_token
+from harness.app.auth import verify_access_token
 from harness.infra.event_bus import event_bus
 from harness.infra.logging import log
 
@@ -27,7 +27,7 @@ async def ws_chat(session_id: str, websocket: WebSocket):
         await websocket.close(code=4001, reason="missing token")
         return
     try:
-        _verify_token(token)
+        await verify_access_token(token)
     except Exception:
         await websocket.close(code=4001, reason="invalid token")
         return

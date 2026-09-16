@@ -2,7 +2,7 @@
 
 状态：**Approved / v1.0**。设计基线见 [GUI 定稿规范](./tauri-desktop-gui-spec.md)；本文只记录实施范围、当前进度和验收缺口，不修改设计要求。
 
-进度快照：**2026-09-15**，依据当前工作区（含未提交改动）及物理机反馈。代码落地不等于验收通过。
+进度快照：**2026-09-16**，依据当前工作区及物理机反馈。代码落地不等于验收通过。
 
 ## 1. 实施边界
 
@@ -18,11 +18,11 @@
 
 | 阶段 | 已落地 | 待验收 / 待实现 |
 |---|---|---|
-| G0 / G1 地基与聊天 | Tauri 2、六模块入口、连接/登录/钥匙串、受控 IPC、SSE→Channel、会话与流式回答；物理机已验证连接和基本回答 | 回答详情新包复验；登录、长会话、停止和断线端到端验证 |
+| G0 / G1 地基与聊天 | Tauri 2、六模块入口、受控 IPC、SSE→Channel、会话与流式回答；访问/刷新令牌只存钥匙串，短令牌自动轮换、服务端会话可撤销；会话重命名/删除已进入 GUI；物理机已验证连接和基本回答 | 新认证会话的真实后端迁移与端到端复验；长会话、停止和断线验证 |
 | G1.5 Shell | 设计 token、导航/侧栏/详情、主题、快捷键、响应式与通用状态组件 | 1280×720、1100×680、960×640 截图；键盘/主题/减少动态效果走查与滚动位置恢复 |
 | G2 对话与运行 | 文本/阶段/工具/用量投影；Runs 单请求聚合列表，以 phases + 脱敏结构化事件历史构建树、工具、Token、耗时和时间线，支持筛选、快照订阅、重连、Chat↔Runs 跳转及关联产物入口 | 停止/断线/重连真机验证；正文 delta 重放与运行取消未提供；升级前旧运行无遥测历史 |
 | G3 审批与产物 | 真实审批队列与四态历史；风险/对象/范围/影响；decision_id + 哈希链；持久审批 outbox 与自动补账；多卡独立提交，持久化失败不放行。产物带真实大小/更新时间/媒体类型及 session/run 来源，支持类型/来源筛选、Markdown/文本/JSON/白名单图片预览、三模块互跳；Rust Core 重新拉取权威正文并以安全文件名无覆盖导出，secret 不下发也不导出 | 重启真实后端验证数据库迁移、审批/补账与真实 Tauri 导出；升级前旧产物需回填来源；二进制附件尚无独立存储契约 |
-| G4 能力与设置 | 五类真实能力目录及单来源降级；七类设置入口；模块访问后保活，切换模块不中断对话；连接切换先取消查询并重置资源上下文；激活时校验 API v1 与 `/auth/me`；更新未配置提示、Rust 诊断导出 | 能力可用性/位置/同步时间、真实连接切换与诊断脱敏验收；通知、签名更新、版本兼容提示 |
+| G4 能力与设置 | 五类真实能力目录及单来源降级；七类设置入口；模块访问后保活；连接切换先取消查询并重置资源上下文；激活时校验 API v1 与 `/auth/me`；设置页展示访问/登录会话到期时间并支持刷新/退出；更新未配置提示、Rust 诊断导出 | 能力可用性/位置/同步时间、真实连接切换与诊断脱敏验收；通知、签名更新、版本兼容提示 |
 | G5 质量与发布 | 投影、流解析、脱敏、IPC、后端协议与关键状态单元回归 | 组件/Tauri E2E、可访问性、性能、平台安装/更新/回滚及发布签字 |
 
 以下是**不能按“已完成”宣传的能力边界**：
@@ -35,7 +35,7 @@
 
 证据入口：[Shell](../desktop/src/app/shell/)、[运行投影](../desktop/src/features/runs/projection.ts)、[Rust 流桥接](../desktop/src-tauri/src/commands/stream.rs)、[审批记录](../desktop/src/features/approvals/decisions.ts)、[审批门/风险派生](../harness/security/approvals.py)、[审批决策/历史路由](../harness/routes/chat.py)、[产物页](../desktop/src/pages/artifacts/index.tsx)、[能力目录](../desktop/src/features/capabilities/useCapabilities.ts)、[系统命令](../desktop/src-tauri/src/commands/system.rs)。
 
-验证记录：前端 `npm run build` 与 `npm test` 通过（14 个用例，六个业务模块按需分包）；Rust `cargo test --locked --offline` 通过（9 个用例）；后端 51 个 unittest、全仓 Ruff 与 `compileall` 通过。新增覆盖模块路径、连接缓存隔离、过期审批计数、后端 OpenAPI 契约、旧工具名拒绝、API 版本门、审批持久化/补账、产物安全预览与导出。浏览器 mock 已走查 G3 页面，并验证设置表单在 Settings → Runs → Settings 切换后保留未保存输入；真实后端下的模块保活仍待下一轮真机走查。`git diff --check` 通过。本机 Rust 工具链未安装 rustfmt/clippy，`npm run lint` 因未安装 `eslint` 无法执行；真实数据库迁移、审批并发、Tauri Host 写盘与 Windows 包仍待验收。后端删除清单与保留边界见 [后端清理审计](./backend-cleanup-audit.md)。
+验证记录：前端 `npm run build` 与 `npm test` 通过（14 个用例，六个业务模块按需分包）；Rust `cargo test` 通过（9 个用例）；后端 54 个 unittest 与全仓 Ruff 通过。新增覆盖访问/刷新令牌类型隔离、撤销会话、会话标题校验与桌面 API 契约。浏览器 mock 已走查登录状态卡、令牌刷新、会话重命名和删除确认面板；真实后端迁移与认证联调仍待下一轮真机走查。`git diff --check` 通过。本机 Rust 工具链未安装 rustfmt/clippy，`npm run lint` 因未安装 `eslint` 无法执行；真实数据库迁移、审批并发、Tauri Host 写盘与 Windows 包仍待验收。后端删除清单与保留边界见 [后端清理审计](./backend-cleanup-audit.md)。
 
 ## 3. 下一步
 

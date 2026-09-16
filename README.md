@@ -13,7 +13,7 @@ harness/  Python / FastAPI (:8765)   编排、对话、管理 API 与容器/podm
 workspace/                           Agent / Skill 文件及工具工作目录
 ```
 
-单一 Python 后端 + PostgreSQL，JWT（HS256）鉴权（harness 用 `HARNESS_AUTH_SECRET` 签发/校验 token）。
+单一 Python 后端 + PostgreSQL，JWT（HS256）鉴权：短期访问令牌配合可撤销、轮换的刷新会话，桌面端令牌只存系统钥匙串。
 
 ---
 
@@ -97,6 +97,8 @@ disable-model-invocation: false
 | `HARNESS_AUTH_SECRET` | JWT 签名密钥，至少 32 字节（禁止提交到仓库） |
 | `EMBEDDING_API_KEY` / `RERANK_API_KEY` | 语义检索与重排凭据 |
 | `QDRANT_API_KEY` / `GITHUB_TOKEN` / `SEARCH_API_KEY` | 向量库、GitHub 与搜索服务凭据 |
+| `[auth] access_token_ttl_minutes` | 短期访问令牌有效期；桌面端到期前自动刷新 |
+| `[auth] token_ttl_hours` | 可撤销登录会话 / 刷新令牌有效期 |
 | `[database] url` | PostgreSQL DSN |
 | `[models] high/mid/low` | 三档模型（推理 / 默认 / 摘要标题） |
 | `[paths] suite_dir` | workspace 套件根；相对路径按仓库根解析，启动时创建 agents/skills 子目录；留空默认 `workspace/` |

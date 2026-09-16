@@ -3,6 +3,7 @@
 表：
   sessions   会话元数据
   messages   逐条消息（user/assistant）
+  auth_sessions 可撤销登录会话（仅保存刷新令牌摘要）
   skills     技能注册表
   agents     Agent 注册表
   knowledge  知识库
@@ -81,6 +82,21 @@ class Message(Base):
     content: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     session: Mapped[Session] = relationship(back_populates="messages")
+
+
+class AuthSessionRecord(Base):
+    """可撤销登录会话；数据库只保存刷新令牌摘要，不保存令牌明文。"""
+
+    __tablename__ = "auth_sessions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    refresh_token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
 # ─── 套件注册表 ───────────────────────────────────────────────────────
@@ -402,6 +418,64 @@ async def create_session(title: str = "新会话") -> Session:
         await db.commit()
         await db.refresh(sess)
         return sess
+
+
+async def create_auth_session(
+    session_id: str,
+    refresh_token_hash: str,
+    expires_at: datetime,
+) -> AuthSessionRecord:
+    sf = session_factory()
+    async with sf() as db:
+        record = AuthSessionRecord(
+            id=session_id,
+            refresh_token_hash=refresh_token_hash,
+            expires_at=expires_at,
+        )
+        db.add(record)
+        await db.commit()
+        await db.refresh(record)
+        return record
+
+
+async def get_auth_session(session_id: str) -> AuthSessionRecord | None:
+    sf = session_factory()
+    async with sf() as db:
+        return await db.get(AuthSessionRecord, session_id)
+
+
+async def rotate_auth_session(
+    session_id: str,
+    expected_refresh_hash: str,
+    new_refresh_hash: str,
+) -> bool:
+    """原子轮换刷新令牌；旧令牌随后不能再次使用。"""
+    sf = session_factory()
+    async with sf() as db:
+        result = await db.execute(
+            update(AuthSessionRecord)
+            .where(
+                AuthSessionRecord.id == session_id,
+                AuthSessionRecord.refresh_token_hash == expected_refresh_hash,
+                AuthSessionRecord.revoked_at.is_(None),
+                AuthSessionRecord.expires_at > _now(),
+            )
+            .values(refresh_token_hash=new_refresh_hash, last_used_at=_now())
+        )
+        await db.commit()
+        return result.rowcount == 1
+
+
+async def revoke_auth_session(session_id: str) -> bool:
+    sf = session_factory()
+    async with sf() as db:
+        result = await db.execute(
+            update(AuthSessionRecord)
+            .where(AuthSessionRecord.id == session_id, AuthSessionRecord.revoked_at.is_(None))
+            .values(revoked_at=_now())
+        )
+        await db.commit()
+        return result.rowcount == 1
 
 
 async def list_sessions(limit: int = 50) -> list[Session]:

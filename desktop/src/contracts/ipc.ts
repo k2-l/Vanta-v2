@@ -21,6 +21,7 @@ export const IPC = {
   connectionTest: "connection_test",
   connectionActivate: "connection_activate",
   authLogin: "auth_login",
+  authRefresh: "auth_refresh",
   authLogout: "auth_logout",
   apiRequest: "api_request",
   chatStart: "chat_start",
@@ -88,6 +89,7 @@ export type IpcContract = {
   [IPC.connectionTest]: { args: { id?: string; draft?: ConnectionDraft }; result: HealthResult };
   [IPC.connectionActivate]: { args: { id: string }; result: ConnectionSession };
   [IPC.authLogin]: { args: { connectionId: string; password: string }; result: AuthSummary };
+  [IPC.authRefresh]: { args: { connectionId: string }; result: AuthSummary };
   [IPC.authLogout]: { args: { connectionId: string }; result: void };
   [IPC.apiRequest]: { args: { connectionId: string; operation: ApiOperation }; result: unknown };
   [IPC.chatStart]: {

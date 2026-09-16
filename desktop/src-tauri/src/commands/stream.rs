@@ -47,21 +47,36 @@ pub async fn chat_start(
 
     let base_url = state.connections.resolve_base_url(&connection_id)?;
     let ca = state.connections.resolve_ca(&connection_id);
-    let token = credentials::read_token(&connection_id)?
+    let mut token = credentials::read_token(&connection_id)?
         .ok_or_else(|| ClientError::new(ErrorKind::Unauthorized, "未登录", false))?;
     // 对话流可能持续很久，只给建连限时，不设整体请求超时（overall_timeout=None）。
-    let response = backend_gateway::build_client(ca.as_deref(), None)?
+    let client = backend_gateway::build_client(ca.as_deref(), None)?;
+    let body = serde_json::json!({
+        "message": content,
+        "session_id": session_id,
+        "execution_env": "local",
+    });
+    let mut response = client
         .post(format!("{base_url}/chat"))
-        .bearer_auth(token)
-        .header("X-Client-Request-Id", client_request_id)
-        .json(&serde_json::json!({
-            "message": content,
-            "session_id": session_id,
-            "execution_env": "local",
-        }))
+        .bearer_auth(&token)
+        .header("X-Client-Request-Id", &client_request_id)
+        .json(&body)
         .send()
         .await
         .map_err(ClientError::from)?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        backend_gateway::refresh(&base_url, &connection_id, ca.as_deref()).await?;
+        token = credentials::read_token(&connection_id)?
+            .ok_or_else(|| ClientError::new(ErrorKind::Unauthorized, "登录已失效", false))?;
+        response = client
+            .post(format!("{base_url}/chat"))
+            .bearer_auth(&token)
+            .header("X-Client-Request-Id", &client_request_id)
+            .json(&body)
+            .send()
+            .await
+            .map_err(ClientError::from)?;
+    }
     if !response.status().is_success() {
         return Err(backend_gateway::map_status(response.status()));
     }
@@ -147,11 +162,14 @@ pub async fn run_subscribe(
     let mut seq = after_seq.unwrap_or(0);
 
     tauri::async_runtime::spawn(async move {
+        let mut token = token;
+        let mut refreshed_after_unauthorized = false;
         // Channel 关闭或页面卸载时 send/stream_stop 会结束循环，无需把长运行误判为完成。
         let reason = 'polling: loop {
             match client.get(&phases_url).bearer_auth(&token).send().await {
                 Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
                     Ok(value) => {
+                        refreshed_after_unauthorized = false;
                         seq += 1;
                         let packet = StreamPacket {
                             event: "snapshot".into(),
@@ -169,6 +187,33 @@ pub async fn run_subscribe(
                         break 'polling "failed";
                     }
                 },
+                Ok(resp) if resp.status() == reqwest::StatusCode::UNAUTHORIZED && !refreshed_after_unauthorized => {
+                    match backend_gateway::refresh(&base_url, &connection_id, ca.as_deref()).await {
+                        Ok(_) => match credentials::read_token(&connection_id) {
+                            Ok(Some(new_token)) => {
+                                token = new_token;
+                                refreshed_after_unauthorized = true;
+                                continue;
+                            }
+                            Ok(None) => {
+                                let _ = on_event.send(err_packet(ClientError::new(
+                                    ErrorKind::Unauthorized,
+                                    "登录已失效",
+                                    false,
+                                )));
+                                break 'polling "failed";
+                            }
+                            Err(err) => {
+                                let _ = on_event.send(err_packet(err));
+                                break 'polling "failed";
+                            }
+                        },
+                        Err(err) => {
+                            let _ = on_event.send(err_packet(err));
+                            break 'polling "failed";
+                        }
+                    }
+                }
                 Ok(resp) => {
                     let _ = on_event.send(err_packet(backend_gateway::map_status(resp.status())));
                     break 'polling "failed";

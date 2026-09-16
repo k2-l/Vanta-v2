@@ -6,6 +6,7 @@ import { useApplyTheme } from "@/hooks/useTheme";
 import { useHotkeys } from "@/hooks/useHotkeys";
 import { useConnection } from "@/stores/connection";
 import { purgeLegacyApprovalStorage } from "@/features/approvals/decisions";
+import { useAuthLifecycle } from "@/features/connection/useActivate";
 
 /**
  * 桌面四层外壳（规范 §2）：标题栏 / 全局导航栏 / 上下文侧栏 + 主工作区 + 详情面板。
@@ -14,6 +15,7 @@ import { purgeLegacyApprovalStorage } from "@/features/approvals/decisions";
 export function AppShell() {
   useApplyTheme();
   useHotkeys();
+  useAuthLifecycle();
   useEffect(() => {
     try {
       purgeLegacyApprovalStorage(localStorage);

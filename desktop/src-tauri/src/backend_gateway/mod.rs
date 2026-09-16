@@ -7,7 +7,11 @@ use crate::connections::ConnectionStore;
 use crate::credentials;
 use crate::error::{ClientError, CmdResult, ErrorKind};
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 use std::time::Duration;
+
+/// 刷新令牌是一次性轮换的；串行化刷新，避免并发 401 让两个请求复用同一旧令牌。
+static REFRESH_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 /// 受控 API 操作枚举（方案 §8.2）——替代任意 method+URL。
 /// 内部标签 `op`，与前端 `contracts/ipc.ts` 的 ApiOperation 对齐。
@@ -107,6 +111,7 @@ pub enum ApiOperation {
     CapabilitiesContainers,
 }
 
+#[derive(Clone, Copy)]
 enum Method {
     Get,
     Post,
@@ -391,15 +396,26 @@ pub async fn health(base_url: &str, ca_cert_path: Option<&str>) -> CmdResult<Hea
     })
 }
 
-/// POST /auth/login —— 用口令换 JWT，令牌落钥匙串，前端只得到到期时间。
+/// 登录/刷新响应；两个令牌都只进入系统钥匙串，WebView 只得到到期时间。
 #[derive(Debug, Deserialize)]
 struct LoginBody {
     token: String,
+    refresh_token: String,
     expires_at: String,
+    refresh_expires_at: String,
 }
 
 pub struct LoginOutcome {
     pub expires_at: String,
+    pub refresh_expires_at: String,
+}
+
+fn store_login_body(connection_id: &str, body: LoginBody) -> CmdResult<LoginOutcome> {
+    credentials::store_token_pair(connection_id, &body.token, &body.refresh_token)?;
+    Ok(LoginOutcome {
+        expires_at: body.expires_at,
+        refresh_expires_at: body.refresh_expires_at,
+    })
 }
 
 pub async fn login(
@@ -418,8 +434,53 @@ pub async fn login(
         return Err(map_status(resp.status()));
     }
     let body: LoginBody = resp.json().await.map_err(ClientError::from)?;
-    credentials::store_token(connection_id, &body.token)?;
-    Ok(LoginOutcome { expires_at: body.expires_at })
+    store_login_body(connection_id, body)
+}
+
+/// 用钥匙串中的一次性刷新令牌轮换令牌对。
+pub async fn refresh(
+    base_url: &str,
+    connection_id: &str,
+    ca_cert_path: Option<&str>,
+) -> CmdResult<LoginOutcome> {
+    let _guard = REFRESH_LOCK.get_or_init(|| tokio::sync::Mutex::new(())).lock().await;
+    let refresh_token = credentials::read_refresh_token(connection_id)?
+        .ok_or_else(|| ClientError::new(ErrorKind::Unauthorized, "登录已过期，请重新登录", false))?;
+    let resp = build_client(ca_cert_path, Some(Duration::from_secs(30)))?
+        .post(format!("{base_url}/auth/refresh"))
+        .json(&serde_json::json!({ "refresh_token": refresh_token }))
+        .send()
+        .await
+        .map_err(ClientError::from)?;
+    if !resp.status().is_success() {
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            let _ = credentials::clear(connection_id);
+        }
+        return Err(map_status(resp.status()));
+    }
+    let body: LoginBody = resp.json().await.map_err(ClientError::from)?;
+    store_login_body(connection_id, body)
+}
+
+/// 撤销服务端登录会话。调用方无论结果如何都应清理本机凭据。
+pub async fn revoke_session(
+    base_url: &str,
+    connection_id: &str,
+    ca_cert_path: Option<&str>,
+) -> CmdResult<()> {
+    let token = credentials::read_token(connection_id)?
+        .ok_or_else(|| ClientError::new(ErrorKind::Unauthorized, "未登录", false))?;
+    let resp = build_client(ca_cert_path, Some(Duration::from_secs(30)))?
+        .post(format!("{base_url}/auth/logout"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(ClientError::from)?;
+    if resp.status().is_success() || resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        Ok(())
+    } else {
+        Err(map_status(resp.status()))
+    }
 }
 
 /// 执行受控 API 操作，返回原始 JSON（前端按契约类型解析）。
@@ -433,21 +494,36 @@ pub async fn request(
     let resolved = op.resolve();
     let url = format!("{base_url}{}", resolved.path);
     let c = build_client(ca.as_deref(), Some(Duration::from_secs(30)))?;
-    let mut builder = match resolved.method {
-        Method::Get => c.get(url),
-        Method::Post => c.post(url),
-        Method::Patch => c.patch(url),
-        Method::Delete => c.delete(url),
+    let mut token = if resolved.auth {
+        Some(
+            credentials::read_token(connection_id)?
+                .ok_or_else(|| ClientError::new(ErrorKind::Unauthorized, "未登录", false))?,
+        )
+    } else {
+        None
     };
-    if resolved.auth {
-        let token = credentials::read_token(connection_id)?
-            .ok_or_else(|| ClientError::new(ErrorKind::Unauthorized, "未登录", false))?;
-        builder = builder.bearer_auth(token);
-    }
-    if let Some(body) = resolved.body {
-        builder = builder.json(&body);
-    }
-    let resp = builder.send().await.map_err(ClientError::from)?;
+    let mut refreshed = false;
+    let resp = loop {
+        let mut builder = match resolved.method {
+            Method::Get => c.get(&url),
+            Method::Post => c.post(&url),
+            Method::Patch => c.patch(&url),
+            Method::Delete => c.delete(&url),
+        };
+        if let Some(access) = token.as_deref() {
+            builder = builder.bearer_auth(access);
+        }
+        if let Some(body) = resolved.body.as_ref() {
+            builder = builder.json(body);
+        }
+        let response = builder.send().await.map_err(ClientError::from)?;
+        if response.status() != reqwest::StatusCode::UNAUTHORIZED || !resolved.auth || refreshed {
+            break response;
+        }
+        refresh(&base_url, connection_id, ca.as_deref()).await?;
+        token = credentials::read_token(connection_id)?;
+        refreshed = true;
+    };
     let status = resp.status();
     if !status.is_success() {
         return Err(map_status(status));

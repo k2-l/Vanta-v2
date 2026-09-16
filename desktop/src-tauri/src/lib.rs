@@ -35,6 +35,7 @@ pub fn run() {
             commands::connection_test,
             commands::connection_activate,
             commands::auth_login,
+            commands::auth_refresh,
             commands::auth_logout,
             commands::api_request,
             commands::chat_start,

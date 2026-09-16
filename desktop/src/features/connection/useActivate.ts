@@ -2,6 +2,7 @@
  * 激活连接 + 登录——把结果写入全局连接状态（Zustand），凭据留在 Rust。
  */
 
+import { useEffect } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ipc } from "@/ipc/client";
 import { useConnection } from "@/stores/connection";
@@ -67,6 +68,7 @@ export function useLogin() {
       if (store.activeConnectionId !== args.connectionId) return;
       store.setAuth(auth);
       store.setStatus(auth.authenticated ? "online" : "unauthenticated");
+      store.setError(undefined);
     },
     onError: (err, args) => {
       const store = useConnection.getState();
@@ -78,11 +80,81 @@ export function useLogin() {
   });
 }
 
+export function useRefreshAuth() {
+  return useMutation({
+    mutationFn: (connectionId: string) => ipc("auth_refresh", { connectionId }),
+    onSuccess: (auth, connectionId) => {
+      const store = useConnection.getState();
+      if (store.activeConnectionId !== connectionId) return;
+      store.setAuth(auth);
+      store.setStatus("online");
+      store.setError(undefined);
+    },
+    onError: (err, connectionId) => {
+      const store = useConnection.getState();
+      if (store.activeConnectionId !== connectionId) return;
+      const error = toClientError(err);
+      if (error.kind === "unauthorized") {
+        store.setAuth({ authenticated: false });
+        store.setStatus("unauthenticated");
+      } else {
+        store.setStatus("degraded");
+      }
+      store.setError(error.message);
+    },
+  });
+}
+
+/** 在访问令牌到期前一分钟静默轮换；刷新会话失效时立即回到登录态。 */
+export function useAuthLifecycle() {
+  const connectionId = useConnection((state) => state.activeConnectionId);
+  const authenticated = useConnection((state) => state.auth.authenticated);
+  const expiresAt = useConnection((state) => state.auth.expiresAt);
+
+  useEffect(() => {
+    if (!connectionId || !authenticated || !expiresAt) return;
+    const expires = new Date(expiresAt).getTime();
+    if (!Number.isFinite(expires)) return;
+    const delay = Math.max(0, Math.min(expires - Date.now() - 60_000, 2_147_000_000));
+    const timer = window.setTimeout(async () => {
+      try {
+        const auth = await ipc("auth_refresh", { connectionId });
+        const store = useConnection.getState();
+        if (store.activeConnectionId !== connectionId) return;
+        store.setAuth(auth);
+        store.setStatus("online");
+        store.setError(undefined);
+      } catch (cause) {
+        const store = useConnection.getState();
+        if (store.activeConnectionId !== connectionId) return;
+        const error = toClientError(cause);
+        if (error.kind === "unauthorized") {
+          store.setAuth({ authenticated: false });
+          store.setStatus("unauthenticated");
+        } else {
+          store.setStatus("degraded");
+        }
+        store.setError(error.message);
+      }
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [authenticated, connectionId, expiresAt]);
+}
+
 export function useLogout() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (connectionId: string) => ipc("auth_logout", { connectionId }),
-    onSuccess: async (_, connectionId) => {
+    onSuccess: (_, connectionId) => {
+      const store = useConnection.getState();
+      if (store.activeConnectionId === connectionId) store.setError(undefined);
+    },
+    onError: (err, connectionId) => {
+      const store = useConnection.getState();
+      if (store.activeConnectionId !== connectionId) return;
+      store.setError(`本机登录已清除，但服务端撤销失败：${toClientError(err).message}`);
+    },
+    onSettled: async (_, _error, connectionId) => {
       const store = useConnection.getState();
       if (store.activeConnectionId !== connectionId) return;
       const predicate = (query: { queryKey: readonly unknown[] }) =>

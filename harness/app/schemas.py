@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ChatRequest(BaseModel):
@@ -68,11 +68,27 @@ class RunEventOut(BaseModel):
 
 
 class SessionCreate(BaseModel):
-    title: str = "新会话"
+    title: str = Field(default="新会话", min_length=1, max_length=200)
+
+    @field_validator("title")
+    @classmethod
+    def normalize_title(cls, value: str) -> str:
+        title = value.strip()
+        if not title:
+            raise ValueError("会话标题不能为空")
+        return title
 
 
 class SessionUpdate(BaseModel):
-    title: str
+    title: str = Field(min_length=1, max_length=200)
+
+    @field_validator("title")
+    @classmethod
+    def normalize_title(cls, value: str) -> str:
+        title = value.strip()
+        if not title:
+            raise ValueError("会话标题不能为空")
+        return title
 
 
 class MessageOut(BaseModel):

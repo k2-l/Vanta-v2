@@ -95,6 +95,8 @@ class TomlConfigSource(PydanticBaseSettingsSource):
         auth = data.get("auth", {})
         if "token_ttl_hours" in auth:
             result["auth_token_ttl_hours"] = auth["token_ttl_hours"]
+        if "access_token_ttl_minutes" in auth:
+            result["auth_access_token_ttl_minutes"] = auth["access_token_ttl_minutes"]
         if "login_rate_limit" in auth:
             result["auth_login_rate_limit"] = auth["login_rate_limit"]
 
@@ -330,7 +332,8 @@ class Settings(BaseSettings):
     # 鉴权（云部署必填）
     auth_password: str = Field(default="", alias="HARNESS_AUTH_PASSWORD")
     auth_secret: str = Field(default="", alias="HARNESS_AUTH_SECRET")
-    auth_token_ttl_hours: int = 168  # 默认 7 天
+    auth_token_ttl_hours: int = Field(default=168, gt=0)  # 登录会话 / 刷新令牌有效期，默认 7 天
+    auth_access_token_ttl_minutes: int = Field(default=60, gt=0)  # 短期访问令牌，默认 1 小时
     auth_login_rate_limit: int = 5   # 每 IP 每分钟最多 5 次登录尝试
 
     # MCP（Model Context Protocol）外部工具服务器（见 harness/tools/mcp）

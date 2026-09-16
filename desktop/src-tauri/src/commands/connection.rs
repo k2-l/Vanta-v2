@@ -54,6 +54,8 @@ pub struct AuthSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_expires_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub user_label: Option<String>,
 }
 
@@ -71,6 +73,8 @@ struct MeBody {
     authenticated: bool,
     #[serde(default)]
     expires_at: Option<String>,
+    #[serde(default)]
+    refresh_expires_at: Option<String>,
 }
 
 /// 激活连接：探活、能力协商，并用 /auth/me 验证钥匙串中的令牌。
@@ -90,6 +94,7 @@ pub async fn connection_activate(state: State<'_, AppState>, id: String) -> CmdR
                 AuthSummary {
                     authenticated: body.authenticated,
                     expires_at: body.expires_at,
+                    refresh_expires_at: body.refresh_expires_at,
                     user_label: None,
                 }
             }
@@ -99,6 +104,7 @@ pub async fn connection_activate(state: State<'_, AppState>, id: String) -> CmdR
                     AuthSummary {
                         authenticated: false,
                         expires_at: None,
+                        refresh_expires_at: None,
                         user_label: None,
                     }
                 }
@@ -109,6 +115,7 @@ pub async fn connection_activate(state: State<'_, AppState>, id: String) -> CmdR
         AuthSummary {
             authenticated: false,
             expires_at: None,
+            refresh_expires_at: None,
             user_label: None,
         }
     };

@@ -3,7 +3,7 @@ import { useState } from "react";
 import { Button } from "@/components/Button";
 import { EmptyState } from "@/components/desktop";
 import { useConnections, useSaveConnection, useDeleteConnection, useTestConnection } from "./useConnections";
-import { useActivateConnection, useLogin } from "./useActivate";
+import { useActivateConnection, useLogin, useLogout, useRefreshAuth } from "./useActivate";
 import { useConnection } from "@/stores/connection";
 import { toClientError, type ClientError } from "@/contracts/errors";
 import type { HealthResult, TlsPolicy } from "@/contracts/connection";
@@ -21,8 +21,11 @@ export function ConnectionManager() {
   const test = useTestConnection();
   const activate = useActivateConnection();
   const login = useLogin();
+  const refreshAuth = useRefreshAuth();
+  const logout = useLogout();
   const active = useConnection((s) => s.activeConnectionId);
   const auth = useConnection((s) => s.auth);
+  const connectionError = useConnection((s) => s.lastError);
 
   const { register, handleSubmit, reset, formState, watch, getValues } = useForm<DraftForm>({
     defaultValues: { label: "", baseUrl: "http://127.0.0.1:8765", tlsPolicy: "system", caCertPath: "" },
@@ -185,8 +188,13 @@ export function ConnectionManager() {
               size="sm"
               disabled={login.isPending || !password}
               onClick={async () => {
-                await login.mutateAsync({ connectionId: active, password });
-                setPassword("");
+                setError(null);
+                try {
+                  await login.mutateAsync({ connectionId: active, password });
+                  setPassword("");
+                } catch (cause) {
+                  setError(toClientError(cause));
+                }
               }}
             >
               登录
@@ -195,13 +203,54 @@ export function ConnectionManager() {
           <p className="text-xs mt-2" style={{ color: "var(--fg-subtle)" }}>
             口令仅一次性传给本地 Rust Core 换取令牌；WebView 不保存明文凭据。
           </p>
+          {(error || connectionError) && (
+            <p className="mt-2 text-xs" style={{ color: "var(--danger)" }}>
+              {error?.message ?? connectionError}
+            </p>
+          )}
         </section>
       )}
 
       {active && auth.authenticated && (
-        <p className="text-xs" style={{ color: "var(--ok)" }}>
-          已登录{auth.expiresAt ? ` · 令牌到期 ${new Date(auth.expiresAt).toLocaleString()}` : ""}
-        </p>
+        <section
+          className="rounded-lg border p-4"
+          style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}
+        >
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-sm font-semibold" style={{ color: "var(--ok)" }}>已登录</h2>
+              <p className="mt-1 text-xs" style={{ color: "var(--fg-muted)" }}>
+                {auth.expiresAt ? `访问令牌：${new Date(auth.expiresAt).toLocaleString()} 到期` : "访问令牌有效"}
+              </p>
+              {auth.refreshExpiresAt && (
+                <p className="mt-1 text-xs" style={{ color: "var(--fg-subtle)" }}>
+                  登录会话：{new Date(auth.refreshExpiresAt).toLocaleString()} 到期
+                </p>
+              )}
+            </div>
+            <div className="flex shrink-0 gap-2">
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={refreshAuth.isPending}
+                onClick={() => void refreshAuth.mutateAsync(active).catch(() => undefined)}
+              >
+                刷新登录
+              </Button>
+              <Button
+                size="sm"
+                variant="dangerGhost"
+                disabled={logout.isPending}
+                onClick={() => logout.mutate(active)}
+              >
+                退出登录
+              </Button>
+            </div>
+          </div>
+          {connectionError && (
+            <p className="mt-2 text-xs" style={{ color: "var(--danger)" }}>{connectionError}</p>
+          )}
+        </section>
       )}
     </div>
   );

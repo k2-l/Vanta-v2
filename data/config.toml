@@ -16,6 +16,7 @@ cors_origins = [
 [auth]
 # 凭据只通过 HARNESS_AUTH_PASSWORD / HARNESS_AUTH_SECRET 环境变量提供，禁止提交。
 token_ttl_hours  = 4
+access_token_ttl_minutes = 60
 login_rate_limit = 5
 
 [models]

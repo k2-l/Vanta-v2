@@ -376,6 +376,20 @@ export async function mockInvoke<C extends keyof IpcContract>(
       return delay({
         authenticated: true,
         expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+        refreshExpiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+        userLabel: "mock-user",
+      }) as never;
+    }
+
+    case "auth_refresh": {
+      const id = a?.connectionId as string;
+      if (!store.authed.has(id)) {
+        return Promise.reject({ kind: "unauthorized", message: "登录会话已失效", retryable: false });
+      }
+      return delay({
+        authenticated: true,
+        expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+        refreshExpiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
         userLabel: "mock-user",
       }) as never;
     }

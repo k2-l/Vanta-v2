@@ -89,8 +89,10 @@ npm run tauri:build   # 打包
 ## G1 当前能力
 
 - 会话列表与消息历史
+- 会话重命名与带二次确认的删除（消息、阶段与运行记录随会话级联删除）
 - 新建会话、发送消息、流式 Markdown 回复
-- Rust Core 持有后端 URL/JWT，通过 Tauri Channel 有序转发 SSE
+- Rust Core 持有后端 URL、访问/刷新令牌；自动轮换短期令牌并通过 Tauri Channel 有序转发 SSE
+- 服务端可撤销登录会话；设置页展示两级到期时间，支持手动刷新和退出登录
 - 停止当前流、浏览器 mock 独立走查
 
 ## G1.5 新增（设计系统与桌面 Shell）

@@ -5,7 +5,7 @@ import json
 import os
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -14,8 +14,9 @@ from fastapi import HTTPException
 
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-only-model-key")
 
+from harness.app.auth import _decode_token, _make_token_pair, verify_access_token
 from harness.app.main import create_app, ensure_workspace
-from harness.app.schemas import HealthResponse
+from harness.app.schemas import HealthResponse, SessionUpdate
 from harness.core.capabilities.memory import automatic_memory_available, recall_as_context
 from harness.core.runtime import _persist_answer, _remember_best_effort
 from harness.infra.settings import get_settings
@@ -57,12 +58,15 @@ class DesktopBackendContractTests(unittest.TestCase):
         required = {
             "/health": "get",
             "/auth/login": "post",
+            "/auth/refresh": "post",
+            "/auth/logout": "post",
             "/auth/me": "get",
             "/chat": "post",
             "/chat/approvals": "get",
             "/chat/approvals/history": "get",
             "/chat/approvals/{call_id}": "post",
             "/sessions": "get",
+            "/sessions/{session_id}": "patch",
             "/runs": "get",
             "/sessions/{session_id}/messages": "get",
             "/sessions/{session_id}/phases": "get",
@@ -79,6 +83,39 @@ class DesktopBackendContractTests(unittest.TestCase):
         for path, method in required.items():
             self.assertIn(path, paths)
             self.assertIn(method, paths[path])
+        self.assertIn("delete", paths["/sessions/{session_id}"])
+
+    def test_session_title_is_trimmed_and_blank_is_rejected(self) -> None:
+        self.assertEqual(SessionUpdate(title="  新标题  ").title, "新标题")
+        with self.assertRaises(ValueError):
+            SessionUpdate(title="   ")
+
+
+class AuthTokenLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.settings = SimpleNamespace(
+            auth_secret="test-secret-with-enough-entropy!",
+            auth_access_token_ttl_minutes=60,
+        )
+
+    def test_access_and_refresh_tokens_are_type_separated(self) -> None:
+        refresh_exp = datetime.now(UTC).replace(microsecond=0) + timedelta(days=1)
+        with patch("harness.app.auth.get_settings", return_value=self.settings):
+            access, refresh, _ = _make_token_pair("session-1", refresh_exp)
+            self.assertEqual(_decode_token(access, "access")["sid"], "session-1")
+            self.assertEqual(_decode_token(refresh, "refresh")["sid"], "session-1")
+            with self.assertRaises(HTTPException):
+                _decode_token(refresh, "access")
+
+    async def test_revoked_server_session_rejects_still_signed_access_token(self) -> None:
+        refresh_exp = datetime.now(UTC).replace(microsecond=0) + timedelta(days=1)
+        with patch("harness.app.auth.get_settings", return_value=self.settings):
+            access, _, _ = _make_token_pair("session-1", refresh_exp)
+            record = SimpleNamespace(revoked_at=datetime.now(UTC), expires_at=refresh_exp)
+            with patch("harness.app.auth.db.get_auth_session", new=AsyncMock(return_value=record)):
+                with self.assertRaises(HTTPException) as raised:
+                    await verify_access_token(access)
+        self.assertEqual(raised.exception.status_code, 401)
 
 
 class OptionalMemoryPersistenceTests(unittest.IsolatedAsyncioTestCase):
