@@ -54,6 +54,17 @@ pub enum ApiOperation {
         #[serde(default)]
         limit: Option<u32>,
     },
+    #[serde(rename = "sessions.patch")]
+    SessionsPatch {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        title: String,
+    },
+    #[serde(rename = "sessions.delete")]
+    SessionsDelete {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+    },
     #[serde(rename = "approvals.list")]
     ApprovalsList,
     #[serde(rename = "approvals.decide")]
@@ -99,6 +110,8 @@ pub enum ApiOperation {
 enum Method {
     Get,
     Post,
+    Patch,
+    Delete,
 }
 
 struct Resolved {
@@ -151,6 +164,18 @@ impl ApiOperation {
                     after_seq.unwrap_or(0),
                     limit.unwrap_or(1000)
                 ),
+                body: None,
+                auth: true,
+            },
+            ApiOperation::SessionsPatch { session_id, title } => Resolved {
+                method: Method::Patch,
+                path: format!("/sessions/{session_id}"),
+                body: Some(serde_json::json!({ "title": title })),
+                auth: true,
+            },
+            ApiOperation::SessionsDelete { session_id } => Resolved {
+                method: Method::Delete,
+                path: format!("/sessions/{session_id}"),
                 body: None,
                 auth: true,
             },
@@ -411,6 +436,8 @@ pub async fn request(
     let mut builder = match resolved.method {
         Method::Get => c.get(url),
         Method::Post => c.post(url),
+        Method::Patch => c.patch(url),
+        Method::Delete => c.delete(url),
     };
     if resolved.auth {
         let token = credentials::read_token(connection_id)?
@@ -454,7 +481,7 @@ mod tests {
 
     #[test]
     fn api_operations_accept_frontend_camel_case_ids() {
-        let cases: [(Value, &str); 8] = [
+        let cases: [(Value, &str); 10] = [
             (
                 json!({ "op": "sessions.messages", "sessionId": "session-1", "limit": 20 }),
                 "/sessions/session-1/messages?limit=20",
@@ -462,6 +489,14 @@ mod tests {
             (
                 json!({ "op": "sessions.phases", "sessionId": "session-1" }),
                 "/sessions/session-1/phases",
+            ),
+            (
+                json!({ "op": "sessions.patch", "sessionId": "session-1", "title": "新标题" }),
+                "/sessions/session-1",
+            ),
+            (
+                json!({ "op": "sessions.delete", "sessionId": "session-1" }),
+                "/sessions/session-1",
             ),
             (
                 json!({ "op": "sessions.events", "sessionId": "session-1", "afterSeq": 7, "limit": 25 }),
@@ -493,6 +528,23 @@ mod tests {
             let operation: ApiOperation = serde_json::from_value(value).unwrap();
             assert_eq!(operation.resolve().path, expected_path);
         }
+    }
+
+    #[test]
+    fn sessions_patch_sends_title_body_and_delete_sends_none() {
+        let patch: ApiOperation =
+            serde_json::from_value(json!({ "op": "sessions.patch", "sessionId": "s1", "title": "改后的标题" }))
+                .unwrap();
+        let resolved = patch.resolve();
+        assert!(matches!(resolved.method, super::Method::Patch));
+        assert_eq!(resolved.body, Some(json!({ "title": "改后的标题" })));
+        assert!(resolved.auth);
+
+        let delete: ApiOperation =
+            serde_json::from_value(json!({ "op": "sessions.delete", "sessionId": "s1" })).unwrap();
+        let resolved = delete.resolve();
+        assert!(matches!(resolved.method, super::Method::Delete));
+        assert_eq!(resolved.body, None);
     }
 
     #[test]

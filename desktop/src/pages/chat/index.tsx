@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Activity, Plus, RotateCw, X } from "lucide-react";
+import { Activity, Pencil, Plus, RotateCw, Trash2, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/Button";
@@ -24,6 +24,7 @@ import {
 import type { ChatMessage, SessionSummary } from "@/contracts/chat";
 import { toClientError } from "@/contracts/errors";
 import { ipc } from "@/ipc/client";
+import { cn } from "@/lib/cn";
 import { startChat } from "@/ipc/chat";
 import { useConnection } from "@/stores/connection";
 import { useUi } from "@/stores/ui";
@@ -101,6 +102,43 @@ export function ChatPage() {
     setNewChat(false);
     resetLive();
   };
+
+  const sessionsKey = ["sessions", connectionId] as const;
+
+  const renameSession = useMutation<unknown, unknown, { id: string; title: string }>({
+    mutationFn: (v) =>
+      ipc("api_request", {
+        connectionId: connectionId!,
+        operation: { op: "sessions.patch", sessionId: v.id, title: v.title },
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: sessionsKey }),
+    onError: (cause) => setError(toClientError(cause).message),
+  });
+
+  const deleteSession = useMutation<unknown, unknown, string>({
+    mutationFn: (id) =>
+      ipc("api_request", {
+        connectionId: connectionId!,
+        operation: { op: "sessions.delete", sessionId: id },
+      }),
+    onSuccess: (_result, id) => {
+      // 先在缓存中摘除，再据剩余项决定选中，避免落到已删会话触发 messages 404。
+      const remaining = (queryClient.getQueryData<SessionSummary[]>(sessionsKey) ?? []).filter(
+        (s) => s.id !== id,
+      );
+      queryClient.setQueryData<SessionSummary[]>(sessionsKey, remaining);
+      queryClient.removeQueries({ queryKey: ["messages", connectionId, id] });
+      queryClient.removeQueries({ queryKey: ["phases", connectionId, id] });
+      if (selectedId === id) {
+        const next = remaining[0]?.id;
+        setSelectedId(next);
+        setNewChat(!next);
+        resetLive();
+      }
+      queryClient.invalidateQueries({ queryKey: sessionsKey });
+    },
+    onError: (cause) => setError(toClientError(cause).message),
+  });
 
   useEffect(() => {
     const onNew = () => startNewChat();
@@ -232,13 +270,15 @@ export function ChatPage() {
             <RailGroupLabel>{group.label}</RailGroupLabel>
             <ResourceList>
               {group.items.map((session) => (
-                <ResourceRow
+                <SessionRow
                   key={session.id}
-                  dense
+                  session={session}
                   selected={selectedId === session.id}
-                  title={session.title || "新会话"}
-                  meta={formatRelative(session.updated_at)}
-                  onClick={() => selectSession(session.id)}
+                  disabled={streaming}
+                  deleting={deleteSession.isPending}
+                  onSelect={() => selectSession(session.id)}
+                  onRename={(title) => renameSession.mutate({ id: session.id, title })}
+                  onDelete={() => deleteSession.mutate(session.id)}
                 />
               ))}
             </ResourceList>
@@ -365,6 +405,156 @@ function MessageBubble({ message, streaming = false }: { message: ChatMessage; s
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
       </div>
     </article>
+  );
+}
+
+function IconAction({
+  label,
+  danger = false,
+  disabled = false,
+  onClick,
+  children,
+}: {
+  label: string;
+  danger?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      disabled={disabled}
+      onClick={onClick}
+      className="grid h-6 w-6 place-items-center rounded-[var(--radius-sm)] border transition-colors hover:bg-[var(--surface-inset)] disabled:opacity-40"
+      style={{ color: danger ? "var(--danger)" : "var(--fg-muted)", background: "var(--surface-overlay)", borderColor: "var(--border)" }}
+    >
+      {children}
+    </button>
+  );
+}
+
+/**
+ * 会话行：常态展示标题 + 时间，悬停或选中时显示重命名 / 删除操作。
+ * 操作层是 ResourceRow（按钮）的兄弟元素而非子元素，避免按钮嵌套并阻止点击冒泡到选中。
+ * 重命名切换为内联输入（Enter/失焦保存、Esc 取消）；删除需内联二次确认。
+ */
+function SessionRow({
+  session,
+  selected,
+  disabled,
+  deleting,
+  onSelect,
+  onRename,
+  onDelete,
+}: {
+  session: SessionSummary;
+  selected: boolean;
+  disabled: boolean;
+  deleting: boolean;
+  onSelect: () => void;
+  onRename: (title: string) => void;
+  onDelete: () => void;
+}) {
+  const [mode, setMode] = useState<"idle" | "rename" | "confirm">("idle");
+  const [draft, setDraft] = useState(session.title || "");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (mode === "rename") {
+      setDraft(session.title || "");
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  }, [mode, session.title]);
+
+  const commit = () => {
+    const next = draft.trim();
+    setMode("idle");
+    if (next && next !== (session.title || "")) onRename(next);
+  };
+
+  if (mode === "rename") {
+    return (
+      <div className="px-1 py-1">
+        <input
+          ref={inputRef}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commit();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              setMode("idle");
+            }
+          }}
+          onBlur={commit}
+          maxLength={200}
+          aria-label="重命名会话"
+          className="w-full rounded-[var(--radius)] border px-2 py-1.5 text-[13px] outline-none"
+          style={{ background: "var(--surface-inset)", borderColor: "var(--accent)", color: "var(--fg)" }}
+        />
+      </div>
+    );
+  }
+
+  if (mode === "confirm") {
+    return (
+      <div
+        className="flex items-center gap-2 rounded-[var(--radius)] px-2 py-2"
+        style={{ background: "var(--danger-tint)" }}
+      >
+        <span className="min-w-0 flex-1 truncate text-[12px]" style={{ color: "var(--fg)" }}>
+          删除「{session.title || "新会话"}」？
+        </span>
+        <Button
+          size="xs"
+          variant="danger"
+          disabled={deleting}
+          onClick={() => {
+            setMode("idle");
+            onDelete();
+          }}
+        >
+          删除
+        </Button>
+        <Button size="xs" variant="ghost" onClick={() => setMode("idle")}>
+          取消
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="group/row relative">
+      <ResourceRow
+        dense
+        selected={selected}
+        title={session.title || "新会话"}
+        meta={formatRelative(session.updated_at)}
+        onClick={onSelect}
+      />
+      <div
+        className={cn(
+          // 隐藏时置 pointer-events-none，避免透明操作层拦截行右侧的选中点击。
+          "absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-1 opacity-0 transition-opacity",
+          "pointer-events-none group-hover/row:pointer-events-auto focus-within:pointer-events-auto",
+          "group-hover/row:opacity-100 focus-within:opacity-100",
+          selected && "pointer-events-auto opacity-100",
+        )}
+      >
+        <IconAction label="重命名" disabled={disabled} onClick={() => setMode("rename")}>
+          <Pencil size={13} />
+        </IconAction>
+        <IconAction label="删除" danger disabled={disabled} onClick={() => setMode("confirm")}>
+          <Trash2 size={13} />
+        </IconAction>
+      </div>
+    </div>
   );
 }
 

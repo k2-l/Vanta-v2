@@ -44,6 +44,8 @@ export type ApiOperation =
   | { op: "runs.list"; limit?: number }
   | { op: "sessions.create"; title?: string }
   | { op: "sessions.messages"; sessionId: string; limit?: number }
+  | { op: "sessions.patch"; sessionId: string; title: string }
+  | { op: "sessions.delete"; sessionId: string }
   | { op: "sessions.phases"; sessionId: string }
   | { op: "sessions.events"; sessionId: string; afterSeq?: number; limit?: number }
   | { op: "approvals.list" }

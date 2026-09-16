@@ -387,12 +387,29 @@ export async function mockInvoke<C extends keyof IpcContract>(
 
     case "api_request": {
       const operation = a?.operation as
-        | { op?: string; sessionId?: string; artifactId?: string; afterSeq?: number; limit?: number; kind?: string; callId?: string; approved?: boolean }
+        | { op?: string; sessionId?: string; artifactId?: string; afterSeq?: number; limit?: number; kind?: string; callId?: string; approved?: boolean; title?: string }
         | undefined;
       if (operation?.op === "sessions.list") return delay(store.sessions.slice()) as never;
       if (operation?.op === "runs.list") return delay(mockRunSummaries(operation.limit)) as never;
       if (operation?.op === "sessions.messages") {
         return delay(store.messages[operation.sessionId ?? ""]?.slice() ?? []) as never;
+      }
+      if (operation?.op === "sessions.patch") {
+        const idx = store.sessions.findIndex((s) => s.id === operation.sessionId);
+        if (idx < 0) return Promise.reject({ kind: "notFound", message: "会话不存在", retryable: false });
+        store.sessions[idx] = { ...store.sessions[idx], title: operation.title ?? "", updated_at: new Date().toISOString() };
+        return delay({ ...store.sessions[idx] }) as never;
+      }
+      if (operation?.op === "sessions.delete") {
+        const id = operation.sessionId ?? "";
+        if (!store.sessions.some((s) => s.id === id)) {
+          return Promise.reject({ kind: "notFound", message: "会话不存在", retryable: false });
+        }
+        store.sessions = store.sessions.filter((s) => s.id !== id);
+        delete store.messages[id];
+        delete store.phases[id];
+        delete store.events[id];
+        return delay(undefined) as never;
       }
       if (operation?.op === "sessions.phases") {
         return delay(store.phases[operation.sessionId ?? ""]?.slice() ?? []) as never;
