@@ -1,5 +1,5 @@
 [anthropic]
-api_key  = "sk-940f9e7c4ea84042b846f87454a04e81"
+api_key  = "xxxxx"
 base_url = "https://api.deepseek.com/anthropic"
 
 [server]
@@ -9,23 +9,21 @@ log_level = "INFO"
 cors_origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
-    "https://localhost:5173",
-    "https://127.0.0.1:5173",
     "tauri://localhost",
     "https://tauri.localhost",
     "http://tauri.localhost"
 ]
 
 [auth]
-password         = "vanta-test-2026"
+password         = "vanta@123456"
 secret           = "eeecc978b044e28c6b3c8a7ab1a22031ce51cd46027cdeb5550bca77df6d8f9e"
-token_ttl_hours  = 168
+token_ttl_hours  = 4
 login_rate_limit = 5
 
 [models]
-high = "deepseek-v4-flash"
-mid  = "deepseek-v4-flash"
-low  = "deepseek-v4-flash"
+high = "deepseek-flash"
+mid  = "deepseek-flash"
+low  = "deepseek-flash"
 
 [database]
 url = "postgresql+asyncpg://harness:harness_dev@localhost/harness"
@@ -33,17 +31,17 @@ url = "postgresql+asyncpg://harness:harness_dev@localhost/harness"
 [paths]
 data_dir     = "data"
 profile_path = "data/profile.md"
-suite_dir    = "/home/ec2-user/vanta/workspace"
+suite_dir    = "workspace"
 
 [context]
 enable_prompt_cache = false
 
 [embedding]
 base_url = "https://ai.gitee.com/v1"
-api_key = "HWS39OIBDHRXNK5JC2KWNRQXZT91SUCOVFRWSWZ6"
+api_key = "xxxxx"
 model = "Qwen3-Embedding-8B"
 
 [rerank]
-enabled = true
+enabled = false
 model = "bge-reranker-v2-m3"
 recall_n = 20
