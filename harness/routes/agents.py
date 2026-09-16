@@ -22,6 +22,7 @@ from harness.contracts.models import (
     normalize_provider_name,
 )
 from harness.providers import get_provider
+from harness.routes._utils import resolve_rename, validated_entity_name
 
 router = APIRouter(prefix="/v1", tags=["agents"])
 
@@ -136,6 +137,7 @@ async def register_agent(
     name = (fm.get("name") or "").strip()
     if not name:
         raise HTTPException(400, "frontmatter 缺少 name 字段")
+    name = validated_entity_name(name)
     try:
         full = _agent_from_fm(fm, body)
     except ValueError as exc:
@@ -156,8 +158,7 @@ async def update_agent(
     if cur is None:
         raise HTTPException(404, "Agent 不存在")
 
-    rename = patch.name is not None and patch.name != agent_id
-    new_id = patch.name if rename else agent_id
+    new_id, rename = resolve_rename(p, agent_id, patch.name, "Agent")
 
     new_full = AgentFull(
         meta=EntityMeta(
@@ -177,9 +178,10 @@ async def update_agent(
         ),
     )
 
+    # 先写新、后删旧：写失败时原 Agent 仍在，避免非原子改名把两份都丢掉。
+    p.write(new_id, new_full)
     if rename:
         p.delete(agent_id)
-    p.write(new_id, new_full)
     _invalidate_caches()
     return _agent_dict(new_full)
 

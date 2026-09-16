@@ -117,6 +117,35 @@ def render_md(full: EntityFull) -> str:
     return f"---\n{fm}\n---\n{full.content}" if fm else full.content
 
 
+# ── 实体名校验（防路径穿越） ────────────────────────────────
+
+_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def validate_entity_name(name: str) -> str:
+    """校验实体名可安全用作单层目录名，返回去空白后的名字；非法抛 ValueError。
+
+    实体落盘为 <root>/<name>/<filename>，name 必须是单层目录名。禁止路径分隔符、
+    '.'/'..'、绝对路径与越界字符，防止 register / rename / delete 经 name 做路径穿越，
+    把内容写入（或 rmtree）到 root 之外。
+    """
+    n = (name or "").strip()
+    if not _NAME_RE.match(n):
+        raise ValueError(
+            f"非法实体名 {name!r}：仅允许字母/数字/._-（首字符为字母或数字），"
+            "长度 1-64，不含路径分隔符或 . / .."
+        )
+    return n
+
+
+def _ensure_within(root: Path, target: Path) -> None:
+    """兜底：确保 target 真实路径落在 root 内（防符号链接等绕过名字校验的穿越）。"""
+    try:
+        target.resolve().relative_to(root.resolve())
+    except ValueError:
+        raise ValueError(f"实体路径越界：{target}") from None
+
+
 # ── 实体目录扫描 / 写入 ─────────────────────────────────────
 
 
@@ -134,7 +163,9 @@ def iter_entity_dirs(root: Path, filename: str) -> Iterator[tuple[str, Path, Pat
 
 def write_entity(root: Path, name: str, filename: str, full: EntityFull) -> Path:
     """把实体按 CC 标准格式写入 <root>/<name>/<filename>，返回文件路径。"""
+    name = validate_entity_name(name)
     d = root / name
+    _ensure_within(root, d)  # 名字校验后再兜底一次，堵符号链接替换
     d.mkdir(parents=True, exist_ok=True)
     md = d / filename
     md.write_text(render_md(full), encoding="utf-8")
@@ -143,7 +174,9 @@ def write_entity(root: Path, name: str, filename: str, full: EntityFull) -> Path
 
 def delete_entity(root: Path, name: str) -> bool:
     """删除实体目录 <root>/<name>；不存在返回 False。"""
+    name = validate_entity_name(name)
     d = root / name
+    _ensure_within(root, d)
     if not d.is_dir():
         return False
     shutil.rmtree(d)

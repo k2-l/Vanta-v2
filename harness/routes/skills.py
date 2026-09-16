@@ -17,6 +17,7 @@ from harness.app.auth import require_auth
 from harness.contracts.frontmatter import normalize_str_list, parse_bool, split_frontmatter
 from harness.contracts.models import EntityFull, EntityMeta, SkillFull
 from harness.providers import get_provider
+from harness.routes._utils import resolve_rename, validated_entity_name
 
 router = APIRouter(prefix="/v1", tags=["skills"])
 
@@ -140,6 +141,7 @@ async def register_skill(req: RegisterSkillRequest, _: Annotated[dict, Depends(r
     name = (fm.get("name") or "").strip()
     if not name:
         raise HTTPException(400, "frontmatter 缺少 name 字段")
+    name = validated_entity_name(name)
     full = _skill_from_fm(fm, body)
     _provider().write(name, full)
     _invalidate_caches()
@@ -154,8 +156,7 @@ async def update_skill(skill_id: str, patch: SkillPatch, _: Annotated[dict, Depe
     if cur is None:
         raise HTTPException(404, "技能不存在")
 
-    rename = patch.name is not None and patch.name != skill_id
-    new_id = patch.name if rename else skill_id
+    new_id, rename = resolve_rename(p, skill_id, patch.name, "技能")
 
     new_full = SkillFull(
         meta=EntityMeta(
@@ -178,10 +179,11 @@ async def update_skill(skill_id: str, patch: SkillPatch, _: Annotated[dict, Depe
         ),
     )
 
-    if rename:
-        _remove_skill_vector(skill_id)  # 旧名 embedding 一并清，避免改名后 Qdrant 残留
-        p.delete(skill_id)
+    # 先写新、后删旧：写失败时原技能仍在，避免非原子改名把两份都丢掉。
     p.write(new_id, new_full)
+    if rename:
+        p.delete(skill_id)
+        _remove_skill_vector(skill_id)  # 旧名 embedding 一并清，避免改名后 Qdrant 残留
     _invalidate_caches()
     _sync_skill_vector(new_id, new_full.meta.description)
     return _skill_dict(new_full)
@@ -205,8 +207,6 @@ async def skill_dep_tree(skill_id: str, _: Annotated[dict, Depends(require_auth)
 @router.post("/skills/reindex")
 async def reindex_skills(_: Annotated[dict, Depends(require_auth)]) -> dict:
     """重建所有 skill 的 embedding 索引。"""
-    from harness.infra.vector import search_skills_semantic
-
     p = _provider()
     p.reload()
     count = 0
@@ -217,5 +217,4 @@ async def reindex_skills(_: Annotated[dict, Depends(require_auth)]) -> dict:
         _sync_skill_vector(name, full.meta.description)
         count += 1
 
-    verified = len(search_skills_semantic("", k=count)) if count else 0
-    return {"reindexed": count, "verified": verified}
+    return {"reindexed": count}

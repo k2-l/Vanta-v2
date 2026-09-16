@@ -11,6 +11,7 @@ from fastapi import HTTPException
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+from harness.contracts.frontmatter import validate_entity_name
 from harness.infra.logging import log
 
 
@@ -92,7 +93,7 @@ def knowledge_to_dict(r: Any) -> dict:
         "title":    r.title,
         "category": r.category,
         "content":  r.content,
-        "tags":     json.loads(r.tags),
+        "tags":     json.loads(r.tags) if r.tags else [],
     }
 
 
@@ -159,6 +160,34 @@ def apply_patch(record: Any, patch: Any, exclude: set[str] | None = None) -> Non
             continue
         if value is not None:
             setattr(record, field, value)
+
+
+# ─── 实体名 / 改名解析（skills & agents 共用） ────────────────────────
+
+def validated_entity_name(name: str) -> str:
+    """校验实体名，非法则转 400；把 ValueError→HTTP 的收敛到一处，register/rename 共用。"""
+    try:
+        return validate_entity_name(name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+
+
+def resolve_rename(
+    provider: Any, current_id: str, new_name: str | None, label: str
+) -> tuple[str, bool]:
+    """解析 PATCH 的目标名，返回 (new_id, rename)。skills / agents 的 update 共用同一契约。
+
+    new_name 为 None 或校验后等于原 id → 不改名；否则校验（拒空/穿越，400）、
+    冲突检测（目标已存在，409），返回新 id。
+    """
+    if new_name is None:
+        return current_id, False
+    candidate = validated_entity_name(new_name)
+    if candidate == current_id:
+        return current_id, False
+    if provider.has(candidate):
+        raise HTTPException(409, f"目标{label}名已存在：{candidate}")
+    return candidate, True
 
 
 # ─── 目录扫描注册 ────────────────────────────────────────────────────
