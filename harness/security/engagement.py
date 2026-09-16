@@ -114,12 +114,37 @@ def target_in_scope(target: str, scope_targets: list[str]) -> bool:
     return False
 
 
+def _normalize_scope_entry(entry: str) -> str:
+    """create 入口的分类归一：URL / host:port → 裸 host；CIDR / repo: 原样保留。
+
+    与运行时 target_in_scope 的 normalize_host 归一化对齐——同一个 http://host:port 在匹配侧
+    能命中，创建侧就不该判非法。注意 CIDR 的 '/' 掩码与 repo: 前缀不能被剥（否则语义丢失）。
+    """
+    e = (entry or "").strip()
+    if not e or e.startswith("repo:"):
+        return e
+    if "://" in e:  # URL：去 scheme/端口/路径/userinfo
+        return normalize_host(e)
+    if "/" in e:  # 无 scheme 的 CIDR：交给 classify 的 ip_network，别剥掉掩码
+        return e
+    return normalize_host(e)  # 裸 host / host:port / IP（含 [IPv6]:port）：安全剥端口
+
+
 def validate_scope(scope_targets: list[str]) -> tuple[list[str], list[str]]:
-    """把 scope 清单分成 (valid, invalid)；空/非法条目进 invalid。"""
+    """把 scope 清单分成 (valid, invalid)；空/非法条目进 invalid。
+
+    每条先分类归一（_normalize_scope_entry）再判类型：URL / host:port 归一为裸 host 后接受，
+    与运行时 target_in_scope 的归一化一致。valid 存归一化后的形态（供落库/沙箱使用），
+    invalid 存用户原始输入（便于报错回显）。
+    """
     valid: list[str] = []
     invalid: list[str] = []
-    for e in scope_targets:
-        (invalid if classify_scope_entry(e) == _KIND_INVALID else valid).append((e or "").strip())
+    for raw in scope_targets:
+        normalized = _normalize_scope_entry(raw)
+        if classify_scope_entry(normalized) == _KIND_INVALID:
+            invalid.append((raw or "").strip())
+        else:
+            valid.append(normalized)
     return valid, invalid
 
 

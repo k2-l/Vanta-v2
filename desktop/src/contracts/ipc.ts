@@ -45,6 +45,8 @@ export type ApiOperation =
   | { op: "runs.list"; limit?: number }
   | { op: "sessions.create"; title?: string }
   | { op: "sessions.messages"; sessionId: string; limit?: number }
+  | { op: "sessions.compress.preview"; sessionId: string }
+  | { op: "sessions.compress.commit"; sessionId: string; summary: string; upto: string }
   | { op: "sessions.patch"; sessionId: string; title: string }
   | { op: "sessions.delete"; sessionId: string }
   | { op: "sessions.phases"; sessionId: string }
@@ -54,6 +56,7 @@ export type ApiOperation =
   | { op: "approvals.history"; limit?: number }
   | { op: "artifacts.list"; kind?: string; sessionId?: string }
   | { op: "artifacts.get"; artifactId: string }
+  | { op: "artifacts.delete"; artifactId: string }
   | { op: "budget.get"; sessionId: string }
   | { op: "capabilities.agents" }
   | { op: "capabilities.skills" }

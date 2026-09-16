@@ -16,13 +16,13 @@ import type { Tone } from "@/components/desktop/status";
 const approvalsKey = (connectionId: string | null) => ["approvals", connectionId] as const;
 const historyKey = (connectionId: string | null) => ["approvals", "history", connectionId] as const;
 
-export function useApprovals() {
+export function useApprovals(refetchInterval = 4000) {
   const connectionId = useConnection((s) => s.activeConnectionId);
   const authed = useConnection((s) => s.auth.authenticated);
   return useQuery<ApprovalWire[]>({
     queryKey: approvalsKey(connectionId),
     enabled: Boolean(connectionId && authed),
-    refetchInterval: 4000, // 待处理队列是短生命周期的内存态，轮询保持新鲜。
+    refetchInterval, // 对话流中使用更短间隔，审批页/导航沿用 4 秒。
     queryFn: async () => {
       const result = await ipc("api_request", {
         connectionId: connectionId!,

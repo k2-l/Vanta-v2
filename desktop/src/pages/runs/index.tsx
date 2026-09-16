@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Activity, MessageSquare } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Activity, MessageSquare, Trash2 } from "lucide-react";
 import { Button } from "@/components/Button";
 import {
   ModuleLayout,
@@ -59,6 +59,29 @@ export function RunsPage() {
   const moduleActive = useIsModuleActive("runs");
   const [timeRange, setTimeRange] = useState<TimeRange>("all");
   const connected = Boolean(connectionId && authenticated);
+  const queryClient = useQueryClient();
+
+  // 删除运行 = 删除其会话（run≈session），会同时从对话列表移除。两步内联确认。
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  useEffect(() => setConfirmingDelete(false), [selectedId]);
+  const deleteRun = useMutation<unknown, unknown, string>({
+    mutationFn: (id) =>
+      ipc("api_request", {
+        connectionId: connectionId!,
+        operation: { op: "sessions.delete", sessionId: id },
+      }),
+    onSuccess: async (_result, id) => {
+      setConfirmingDelete(false);
+      if (selectedId === id) {
+        select("runs", null);
+        useUi.getState().setDetailOpen("runs", false);
+      }
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["runs", connectionId] }),
+        queryClient.invalidateQueries({ queryKey: ["sessions", connectionId] }),
+      ]);
+    },
+  });
 
   const runs = useQuery<RunSummaryWire[]>({
     queryKey: ["runs", connectionId],
@@ -133,6 +156,21 @@ export function RunsPage() {
         <Button size="sm" variant="secondary" className="mt-1 w-full" onClick={backToChat}>
           <MessageSquare size={14} />
           回到来源会话
+        </Button>
+        <Button
+          size="sm"
+          variant={confirmingDelete ? "danger" : "dangerGhost"}
+          className="mt-1 w-full"
+          disabled={deleteRun.isPending}
+          title="删除该运行及其会话（含消息与运行遥测，不可撤销）"
+          onClick={() => {
+            if (confirmingDelete && selectedId) deleteRun.mutate(selectedId);
+            else setConfirmingDelete(true);
+          }}
+          onBlur={() => setConfirmingDelete(false)}
+        >
+          <Trash2 size={14} />
+          {deleteRun.isPending ? "删除中…" : confirmingDelete ? "确认删除（含会话与消息）" : "删除运行"}
         </Button>
       </DetailPanel>
     ) : selectedId && detailLoading ? (

@@ -4,7 +4,8 @@
  * 纯展示组件，只接收归一化 model。
  */
 
-import { Activity, Download, FileWarning, ImageIcon, MessageSquare } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Activity, Download, FileWarning, ImageIcon, MessageSquare, Trash2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/Button";
@@ -30,16 +31,23 @@ export type ArtifactPreviewModel = {
 export function ArtifactPreview({
   model,
   onExport,
+  onDelete,
   onOpenSourceChat,
   onOpenSourceRun,
   exporting = false,
+  deleting = false,
 }: {
   model: ArtifactPreviewModel;
   onExport?: () => void;
+  onDelete?: () => void;
   onOpenSourceChat?: () => void;
   onOpenSourceRun?: () => void;
   exporting?: boolean;
+  deleting?: boolean;
 }) {
+  // 两步内联确认：首点转「确认删除？」，再点才真删；切换产物或失焦即复位。
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  useEffect(() => setConfirmingDelete(false), [model.id]);
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header
@@ -77,6 +85,26 @@ export function ArtifactPreview({
             <Download size={14} />
             {exporting ? "导出中…" : "导出"}
           </Button>
+          {onDelete && (
+            <Button
+              size="sm"
+              variant={confirmingDelete ? "danger" : "dangerGhost"}
+              disabled={deleting}
+              title="删除该产物（不可撤销）"
+              onClick={() => {
+                if (confirmingDelete) {
+                  onDelete();
+                  setConfirmingDelete(false);
+                } else {
+                  setConfirmingDelete(true);
+                }
+              }}
+              onBlur={() => setConfirmingDelete(false)}
+            >
+              <Trash2 size={14} />
+              {deleting ? "删除中…" : confirmingDelete ? "确认删除？" : "删除"}
+            </Button>
+          )}
         </div>
       </header>
 

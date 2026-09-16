@@ -46,3 +46,8 @@ model = "Qwen3-Embedding-8B"
 enabled = false
 model = "bge-reranker-v2-m3"
 recall_n = 20
+
+[permissions]
+# ask 决策的审批方：audit_agent = 用 model_low(deepseek-flash) 自动裁决，
+# 默认放行常规操作、只拦破坏性动作(rm -rf 等)、fail-closed；替代阻塞式人工审批。
+reviewer = "audit_agent"

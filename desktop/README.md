@@ -71,6 +71,19 @@ npm run tauri:build:debug  # 生成含最新前端资源的 target/debug/vanta-d
 npm run tauri:build   # 打包
 ```
 
+Apple Silicon（M1～M5）统一使用 Rust 目标 `aarch64-apple-darwin`。在 M5 Mac 上生成
+原生 ARM64 `.app`（不会通过 Rosetta 运行）：
+
+```bash
+npm run tauri:build:mac-arm64:debug  # 本机联调包，ad-hoc 签名
+npm run tauri:build:mac-arm64        # ARM64 release 包，ad-hoc 签名
+```
+
+产物分别位于
+`target/aarch64-apple-darwin/debug/bundle/macos/Vanta.app` 与
+`target/aarch64-apple-darwin/release/bundle/macos/Vanta.app`。正式分发时不要使用 ad-hoc
+签名脚本，应配置 Apple Developer ID 证书和 notarization 凭据后执行发行构建。
+
 不要把裸 `cargo build` 作为桌面 GUI 的常规构建入口：它不会执行 Tauri 配置中的
 `beforeBuildCommand`，可能把旧的或缺失的 `dist/` 嵌入 `target/debug/vanta-desktop`，表现为
 窗口能够启动但内容空白。开发使用 `tauri:dev`；需要独立 debug 程序时使用
@@ -84,13 +97,14 @@ npm run tauri:build   # 打包
 - [x] UI tokens、hash 路由、六区导航、基础组件
 - [x] Rust Core 编译与单元测试通过
 - [x] 后端 `/health` 提供 `capabilities` / `api_version`
-- [ ] 连真实后端完成端到端登录与聊天验证
+- [x] 连真实后端完成端到端登录、流式聊天与主动上下文压缩验证
 
 ## G1 当前能力
 
 - 会话列表与消息历史
 - 会话重命名与带二次确认的删除（消息、阶段与运行记录随会话级联删除）
 - 新建会话、发送消息、流式 Markdown 回复
+- 输入器下方可主动压缩已有会话：先生成可编辑的结构化摘要和 Token 对比，确认后提交检查点；原始消息不删除
 - Rust Core 持有后端 URL、访问/刷新令牌；自动轮换短期令牌并通过 Tauri Channel 有序转发 SSE
 - 服务端可撤销登录会话；设置页展示两级到期时间，支持手动刷新和退出登录
 - 停止当前流、浏览器 mock 独立走查

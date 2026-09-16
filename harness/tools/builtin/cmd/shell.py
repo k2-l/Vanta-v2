@@ -164,7 +164,9 @@ async def _run_in_sandbox(exec_env, command: str, timeout: float) -> ToolResult:
 class ShellExecTool(Tool):
     name = "Bash"
     category = "exec"
-    requires_approval = True
+    # 是否审批由 permissions.py 对具体命令逐段判定：只读命令放行，风险/未知命令询问，
+    # 明确危险命令拒绝。不能把整个 Bash 工具设为强制审批，否则 pwd/rg/git 等也会逐步打断。
+    requires_approval = False
     approval_message = "确认执行 Bash 命令：{command}？"
     risk_level = "high"
     description = (

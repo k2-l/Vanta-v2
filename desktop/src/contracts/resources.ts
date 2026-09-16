@@ -34,6 +34,8 @@ export type ApprovalDecisionRecord = {
   call_id: string;
   tool_name: string;
   session_id: string;
+  /** 决策方：human=人工；audit_agent=LLM 自动裁决；system=过期等。 */
+  actor?: string;
   decision: "approved" | "rejected" | "expired";
   risk?: string;
   risk_source?: string;

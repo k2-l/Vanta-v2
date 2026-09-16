@@ -44,6 +44,18 @@ pub enum ApiOperation {
         #[serde(default)]
         limit: Option<u32>,
     },
+    #[serde(rename = "sessions.compress.preview")]
+    SessionsCompressPreview {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+    },
+    #[serde(rename = "sessions.compress.commit")]
+    SessionsCompressCommit {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        summary: String,
+        upto: String,
+    },
     #[serde(rename = "sessions.phases")]
     SessionsPhases {
         #[serde(rename = "sessionId")]
@@ -94,6 +106,11 @@ pub enum ApiOperation {
         #[serde(rename = "artifactId")]
         artifact_id: String,
     },
+    #[serde(rename = "artifacts.delete")]
+    ArtifactsDelete {
+        #[serde(rename = "artifactId")]
+        artifact_id: String,
+    },
     #[serde(rename = "budget.get")]
     BudgetGet {
         #[serde(rename = "sessionId")]
@@ -128,6 +145,15 @@ struct Resolved {
 }
 
 impl ApiOperation {
+    fn timeout(&self) -> Duration {
+        // 压缩预览会调用摘要模型，不能沿用普通 CRUD 的 30 秒总超时。
+        if matches!(self, ApiOperation::SessionsCompressPreview { .. }) {
+            Duration::from_secs(120)
+        } else {
+            Duration::from_secs(30)
+        }
+    }
+
     fn resolve(&self) -> Resolved {
         match self {
             ApiOperation::Health => Resolved { method: Method::Get, path: "/health".into(), body: None, auth: false },
@@ -154,6 +180,18 @@ impl ApiOperation {
                 method: Method::Get,
                 path: format!("/sessions/{session_id}/messages?limit={}", limit.unwrap_or(200)),
                 body: None,
+                auth: true,
+            },
+            ApiOperation::SessionsCompressPreview { session_id } => Resolved {
+                method: Method::Post,
+                path: format!("/sessions/{session_id}/compress/preview"),
+                body: None,
+                auth: true,
+            },
+            ApiOperation::SessionsCompressCommit { session_id, summary, upto } => Resolved {
+                method: Method::Post,
+                path: format!("/sessions/{session_id}/compress/commit"),
+                body: Some(serde_json::json!({ "summary": summary, "upto": upto })),
                 auth: true,
             },
             ApiOperation::SessionsPhases { session_id } => Resolved {
@@ -223,6 +261,12 @@ impl ApiOperation {
             },
             ApiOperation::ArtifactsGet { artifact_id } => Resolved {
                 method: Method::Get,
+                path: format!("/v1/artifacts/{}", encode_query_component(artifact_id)),
+                body: None,
+                auth: true,
+            },
+            ApiOperation::ArtifactsDelete { artifact_id } => Resolved {
+                method: Method::Delete,
                 path: format!("/v1/artifacts/{}", encode_query_component(artifact_id)),
                 body: None,
                 auth: true,
@@ -491,9 +535,10 @@ pub async fn request(
 ) -> CmdResult<serde_json::Value> {
     let base_url = store.resolve_base_url(connection_id)?;
     let ca = store.resolve_ca(connection_id);
+    let timeout = op.timeout();
     let resolved = op.resolve();
     let url = format!("{base_url}{}", resolved.path);
-    let c = build_client(ca.as_deref(), Some(Duration::from_secs(30)))?;
+    let c = build_client(ca.as_deref(), Some(timeout))?;
     let mut token = if resolved.auth {
         Some(
             credentials::read_token(connection_id)?
@@ -557,7 +602,7 @@ mod tests {
 
     #[test]
     fn api_operations_accept_frontend_camel_case_ids() {
-        let cases: [(Value, &str); 10] = [
+        let cases: [(Value, &str); 13] = [
             (
                 json!({ "op": "sessions.messages", "sessionId": "session-1", "limit": 20 }),
                 "/sessions/session-1/messages?limit=20",
@@ -565,6 +610,14 @@ mod tests {
             (
                 json!({ "op": "sessions.phases", "sessionId": "session-1" }),
                 "/sessions/session-1/phases",
+            ),
+            (
+                json!({ "op": "sessions.compress.preview", "sessionId": "session-1" }),
+                "/sessions/session-1/compress/preview",
+            ),
+            (
+                json!({ "op": "sessions.compress.commit", "sessionId": "session-1", "summary": "摘要", "upto": "2026-09-16T12:00:00Z" }),
+                "/sessions/session-1/compress/commit",
             ),
             (
                 json!({ "op": "sessions.patch", "sessionId": "session-1", "title": "新标题" }),
@@ -596,6 +649,10 @@ mod tests {
             ),
             (
                 json!({ "op": "artifacts.get", "artifactId": "artifact/1" }),
+                "/v1/artifacts/artifact%2F1",
+            ),
+            (
+                json!({ "op": "artifacts.delete", "artifactId": "artifact/1" }),
                 "/v1/artifacts/artifact%2F1",
             ),
         ];

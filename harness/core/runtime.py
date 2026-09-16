@@ -466,6 +466,12 @@ class AgentRuntime:
                 ev_name = event.get("event", "")
                 ev_data = event.get("data", {})
 
+                # audit_agent 的 LLM 裁决（model_low）是内部审批门，不是对话内容：
+                # 按 "audit_agent" tag（见 security/audit_agent.py）整体跳过其模型事件，
+                # 否则裁决 JSON 会作为 worker text_delta 漏进聊天流。
+                if "audit_agent" in (event.get("tags") or []):
+                    continue
+
                 # ── Agent 语义阶段 ──────────────────────────────────────
                 if ev_name == "on_chain_start":
                     node_name = event.get("name", "")

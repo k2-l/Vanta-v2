@@ -23,6 +23,7 @@ from harness.security.approvals import (
     describe_impact,
     describe_scope,
     describe_target,
+    record_auto_decision,
     request_approval,
 )
 from harness.security.audit_agent import audit_review
@@ -171,9 +172,33 @@ async def execute_tool_core(
                     approval_msg = tool.approval_message
             else:
                 approval_msg = _ask_message(tool_name, tool_input)
+            # 审批上下文：派生风险/对象/范围/影响（供 HITL 卡片与审批历史如实展示，规范 §4.3）。
+            # 工具可通过 approval_context 提供精确规则，未提供的键走通用派生。两种审批方共用。
+            level, risk_source = classify_risk(tool.category, tool.risk_level)
+            ctx = tool.approval_context(tool_input)
+            target = ctx.get("target") or describe_target(tool_input)
+            scope = ctx.get("scope") or describe_scope(
+                kind=xenv.kind,
+                container_id=xenv.container_id,
+                engagement_id=xenv.engagement_id,
+            )
+            impact = ctx.get("impact") or describe_impact(level)
             # 审批方：audit_agent=LLM 自动裁决（默认放行、只拦破坏性），否则阻塞式人工审批
             if get_settings().approval_reviewer == "audit_agent":
                 approved, comment = await audit_review(session_id, tool_name, tool_input, approval_msg)
+                # 自动裁决同样落审批历史 + 哈希链审计，使其在审批模块可追溯（fail-safe）。
+                await record_auto_decision(
+                    session_id=session_id,
+                    tool_name=tool_name,
+                    message=approval_msg,
+                    approved=approved,
+                    comment=comment,
+                    risk=level,
+                    risk_source=risk_source,
+                    target=target,
+                    scope=scope,
+                    impact=impact,
+                )
                 if not approved:
                     error_code = "APPROVAL_REJECTED"
                     content = f"[BLOCKED] 审计 Agent 拒绝执行工具 {tool_name!r}：{comment}"
@@ -182,24 +207,15 @@ async def execute_tool_core(
                     return content, error_code, error_str, flags, logs
                 logs.append(f"← {tool_name}: 审计放行 ({comment[:60]})")
             else:
-                # 阻塞式人工审批：派生风险/对象/范围/影响，供 HITL 卡片如实展示（规范 §4.3）。
-                # 工具可通过 approval_context 提供精确规则，未提供的键走通用派生。
-                level, risk_source = classify_risk(tool.category, tool.risk_level)
-                ctx = tool.approval_context(tool_input)
                 approved = await request_approval(
                     session_id,
                     tool_name,
                     approval_msg,
                     risk=level,
                     risk_source=risk_source,
-                    target=ctx.get("target") or describe_target(tool_input),
-                    scope=ctx.get("scope")
-                    or describe_scope(
-                        kind=xenv.kind,
-                        container_id=xenv.container_id,
-                        engagement_id=xenv.engagement_id,
-                    ),
-                    impact=ctx.get("impact") or describe_impact(level),
+                    target=target,
+                    scope=scope,
+                    impact=impact,
                 )
                 if not approved:
                     error_code = "APPROVAL_REJECTED"

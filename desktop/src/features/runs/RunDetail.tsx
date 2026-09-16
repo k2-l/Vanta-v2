@@ -3,11 +3,11 @@
  * Agent 树来自 phase 图；用量为独立 token；时间线合并 phase 与工具事件。
  */
 
-import { Package } from "lucide-react";
+import { Package, Wrench } from "lucide-react";
 import { Button } from "@/components/Button";
 import { DetailSection, DetailField } from "@/components/desktop/DetailPanel";
 import { RunTimeline } from "@/components/desktop/RunTimeline";
-import { StatusBadge, StatusDot } from "@/components/desktop/status";
+import { StatusBadge, StatusDot, type Tone } from "@/components/desktop/status";
 import { formatDuration, formatTokens } from "@/lib/format";
 import { useArtifacts } from "@/features/artifacts/useArtifacts";
 import { useModuleNavigation } from "@/app/moduleNavigation";
@@ -21,7 +21,63 @@ import {
   type PhaseNode,
   type RunProjection,
   type RunUsage,
+  type ToolEvent,
+  type ToolStatus,
 } from "./projection";
+
+const TOOL_TONE: Record<ToolStatus, Tone> = { running: "running", ok: "ok", failed: "danger" };
+const TOOL_LABEL: Record<ToolStatus, string> = { running: "调用中", ok: "成功", failed: "失败" };
+
+/** Bash 取 command，其余工具序列化 args；供运行详情如实展示"调用详细"。 */
+function formatToolInput(inputs?: Record<string, unknown>): string {
+  if (!inputs || Object.keys(inputs).length === 0) return "";
+  if (typeof inputs.command === "string") return inputs.command;
+  try {
+    return JSON.stringify(inputs, null, 2);
+  } catch {
+    return String(inputs);
+  }
+}
+
+/** 单次工具调用卡：工具名 + 状态 + 入参(命令) + 输出/错误。 */
+function ToolCallCard({ tool }: { tool: ToolEvent }) {
+  const input = formatToolInput(tool.inputs);
+  const body = tool.status === "failed" ? tool.error || tool.output : tool.output;
+  const clipped = body && body.length > 800 ? `${body.slice(0, 800)}…（已截断）` : body;
+  return (
+    <div
+      className="rounded-[var(--radius)] border px-2.5 py-2"
+      style={{ borderColor: "var(--border)", background: "var(--surface-inset)" }}
+    >
+      <div className="mb-1 flex items-center gap-1.5">
+        <Wrench size={11} style={{ color: "var(--fg-subtle)" }} className="shrink-0" />
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px]" style={{ color: "var(--fg)" }}>
+          {tool.tool}
+        </span>
+        <StatusBadge tone={TOOL_TONE[tool.status]}>{TOOL_LABEL[tool.status]}</StatusBadge>
+      </div>
+      {input && (
+        <pre
+          className="mb-1 max-h-24 overflow-auto whitespace-pre-wrap break-all rounded px-2 py-1 font-mono text-[10.5px] leading-relaxed"
+          style={{ background: "var(--surface-overlay)", color: "var(--fg-muted)" }}
+        >
+          {input}
+        </pre>
+      )}
+      {clipped && (
+        <pre
+          className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded px-2 py-1 font-mono text-[10.5px] leading-relaxed"
+          style={{
+            background: "var(--surface-overlay)",
+            color: tool.status === "failed" ? "var(--danger)" : "var(--fg-subtle)",
+          }}
+        >
+          {clipped}
+        </pre>
+      )}
+    </div>
+  );
+}
 
 export function AgentTree({ projection, node, depth = 0 }: { projection: RunProjection; node?: PhaseNode; depth?: number }) {
   if (!node) {
@@ -133,6 +189,16 @@ export function RunDetailBody({
           <p className="text-[12px]" style={{ color: "var(--fg-subtle)" }}>暂无持久用量；升级前创建的旧运行可能未记录。</p>
         )}
       </DetailSection>
+
+      {projection.tools.length > 0 && (
+        <DetailSection title={`工具调用（${toolCount(projection)}）`}>
+          <div className="flex flex-col gap-2">
+            {projection.tools.map((tool) => (
+              <ToolCallCard key={tool.key} tool={tool} />
+            ))}
+          </div>
+        </DetailSection>
+      )}
 
       <DetailSection title="事件时间线">
         <RunTimeline items={timeline.map((t) => ({ id: t.id, label: t.label, detail: t.detail, at: "", tone: t.tone }))} />

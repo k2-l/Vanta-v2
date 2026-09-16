@@ -3,7 +3,7 @@
  * 停止按钮只在运行期间出现；Enter 发送、Shift+Enter 换行。
  */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { Send, Square } from "lucide-react";
 import { Button } from "@/components/Button";
 
@@ -16,6 +16,7 @@ export function DesktopComposer({
   disabled = false,
   placeholder = "输入消息…",
   hint = "Enter 发送 · Shift + Enter 换行",
+  footer,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -25,6 +26,7 @@ export function DesktopComposer({
   disabled?: boolean;
   placeholder?: string;
   hint?: string;
+  footer?: ReactNode;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -69,9 +71,10 @@ export function DesktopComposer({
           </Button>
         )}
       </div>
-      <p className="mt-2 text-center text-[11px]" style={{ color: "var(--fg-subtle)" }}>
-        {hint}
-      </p>
+      <div className={footer ? "mt-2 flex min-h-7 items-center justify-between gap-3" : "mt-2 text-center"}>
+        <p className="text-[11px]" style={{ color: "var(--fg-subtle)" }}>{hint}</p>
+        {footer}
+      </div>
     </div>
   );
 }

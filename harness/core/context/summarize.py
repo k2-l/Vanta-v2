@@ -83,15 +83,21 @@ async def compact_session_history(
     parts.append("【对话历史】\n" + transcript)
     user = "\n\n".join(parts)
 
+    # 推理型兼容模型会把 max_tokens 同时用于思考与正文；预算过小时可能只返回
+    # thinking block、正文为空。主动压缩必须拿到可供用户确认的正文，因此为这类
+    # 模型预留推理余量，同时仍由提示词约束摘要长度。
+    request_max_tokens = max(max_tokens, 4096)
     model = build_chat_model(
         provider=resolve_provider(provider, model_name),
         model=model_name,
-        max_tokens=max_tokens,
+        max_tokens=request_max_tokens,
     )
     resp = await model.ainvoke(
         [SystemMessage(content=_COMPACTION_SYSTEM), HumanMessage(content=user)]
     )
     summary = _extract_text(resp.content).strip()
+    if not summary:
+        raise RuntimeError("压缩模型返回空摘要，请重试或检查低档模型配置")
     log.info(
         "context.compacted",
         transcript=len(transcript),

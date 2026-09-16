@@ -46,3 +46,16 @@ async def get_artifact(
     if row is None:
         raise HTTPException(404, "产物不存在")
     return artifact_to_dict(row)
+
+
+@router.delete("/artifacts/{artifact_id}", status_code=204)
+async def delete_artifact(
+    artifact_id: str,
+    _claims: Annotated[dict, Depends(require_auth)],
+) -> None:
+    """删除单个看板产物（操作者清理动作）。不存在返回 404。
+
+    写侧只此一个删除入口暴露给操作者；创建仍只由 agent 的 board 工具产出。
+    """
+    if not await db.delete_artifact(artifact_id):
+        raise HTTPException(404, "产物不存在")

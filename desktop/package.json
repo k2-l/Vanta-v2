@@ -13,6 +13,8 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build:debug": "tauri build --debug --no-bundle",
+    "tauri:build:mac-arm64:debug": "APPLE_SIGNING_IDENTITY=- tauri build --debug --bundles app --target aarch64-apple-darwin",
+    "tauri:build:mac-arm64": "APPLE_SIGNING_IDENTITY=- tauri build --bundles app --target aarch64-apple-darwin",
     "tauri:build": "tauri build"
   },
   "dependencies": {

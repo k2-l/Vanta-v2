@@ -47,6 +47,8 @@ type DecidedView = {
   decisionId?: string;
   entryHash?: string;
   auditRecorded?: boolean;
+  /** 决策方：human=人工；audit_agent=LLM 自动裁决。 */
+  actor?: string;
 };
 
 /** 服务端决策历史项 → 归一化视图（无原始 requested_at，用决策时间近似展示）。 */
@@ -71,6 +73,7 @@ function fromRecord(r: ApprovalDecisionRecord): DecidedView {
     decisionId: r.decision_id,
     entryHash: r.entry_hash,
     auditRecorded: r.audit_recorded,
+    actor: r.actor,
   };
 }
 
@@ -84,6 +87,7 @@ function fromLocal(d: Decision): DecidedView {
     decisionId: d.decisionId,
     entryHash: d.entryHash,
     auditRecorded: d.auditRecorded,
+    actor: "human",
   };
 }
 
@@ -265,6 +269,15 @@ export function ApprovalsPage() {
       </DetailSection>
       {selectedDecided && (
         <DetailSection title="审计证据">
+          <DetailField label="决策方">
+            {selectedDecided.actor === "audit_agent" ? (
+              <StatusBadge tone="neutral">审计 Agent 自动裁决</StatusBadge>
+            ) : selectedDecided.actor === "human" ? (
+              "人工"
+            ) : (
+              selectedDecided.actor || "—"
+            )}
+          </DetailField>
           <DetailField label="决策 ID"><span className="font-mono text-[11px]">{selectedDecided.decisionId}</span></DetailField>
           <DetailField label="账本哈希">
             <span className="font-mono text-[11px] break-all">

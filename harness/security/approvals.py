@@ -161,6 +161,82 @@ async def _record_expired_approval(call_id: str, meta: dict[str, str]) -> None:
         )
 
 
+async def record_auto_decision(
+    *,
+    session_id: str,
+    tool_name: str,
+    message: str,
+    approved: bool,
+    comment: str = "",
+    risk: str = "",
+    risk_source: str = "",
+    target: str = "",
+    scope: str = "",
+    impact: str = "",
+) -> None:
+    """把 audit_agent 的自动裁决落审批历史 + 哈希链审计，使其在审批模块可追溯。
+
+    actor="audit_agent"；decision=approved/rejected；裁决理由 comment 并入 impact 便于前端展示。
+    与 _record_expired_approval 同款持久化路径。fail-safe：记录失败只告警，绝不影响工具执行。
+    """
+    decision = "approved" if approved else "rejected"
+    decision_id = uuid.uuid4().hex
+    call_id = uuid.uuid4().hex[:12]
+    now = datetime.now(UTC).isoformat()
+    reason = (impact or "").strip()
+    if comment:
+        reason = f"{reason}（审计：{comment}）" if reason else f"审计：{comment}"
+    history_saved = False
+    try:
+        await db.save_approval_history(
+            decision_id=decision_id,
+            call_id=call_id,
+            tool_name=tool_name,
+            session_id=session_id,
+            actor="audit_agent",
+            decision=decision,
+            risk=risk,
+            risk_source=risk_source,
+            target=target,
+            scope=scope,
+            impact=reason,
+            message=message,
+            requested_at=now,
+            expires_at=now,
+        )
+        history_saved = True
+    except Exception as exc:  # noqa: BLE001 — 记录失败不影响工具执行
+        log.warning("approval.auto_history_failed", tool_name=tool_name, exc=str(exc)[:200])
+
+    entry_hash = await append_audit(
+        "tool_approval",
+        session_id=session_id,
+        actor="audit_agent",
+        target=target,
+        command=message,
+        decision=decision,
+        detail={
+            "decision_id": decision_id,
+            "call_id": call_id,
+            "tool_name": tool_name,
+            "risk": risk,
+            "risk_source": risk_source,
+            "scope": scope,
+            "impact": reason,
+            "comment": comment,
+            "reviewer": "audit_agent",
+            "requested_at": now,
+            "expires_at": now,
+            "audit_recorded": True,
+        },
+    )
+    if history_saved and entry_hash:
+        try:
+            await db.mark_approval_audited(decision_id, entry_hash)
+        except Exception as exc:  # noqa: BLE001 — 下次历史查询按 decision_id 补偿
+            log.warning("approval.auto_mark_failed", tool_name=tool_name, exc=str(exc)[:200])
+
+
 async def request_approval(
     session_id: str,
     tool_name: str,

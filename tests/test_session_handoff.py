@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi import HTTPException
 
 from harness.app.schemas import CompressCommitRequest, SessionUpdate
+from harness.core.context.summarize import compact_session_history
 from harness.infra import db
 from harness.routes import sessions
 
@@ -39,6 +40,21 @@ class _FakeDbSession:
 
 
 class SessionHandoffTests(unittest.IsolatedAsyncioTestCase):
+    async def test_compaction_reserves_reasoning_budget_and_rejects_empty_output(self):
+        empty_response = SimpleNamespace(content="")
+        model = SimpleNamespace(ainvoke=AsyncMock(return_value=empty_response))
+        with patch(
+            "harness.core.context.summarize.build_chat_model", return_value=model
+        ) as build:
+            with self.assertRaisesRegex(RuntimeError, "空摘要"):
+                await compact_session_history(
+                    "用户：测试",
+                    model_name="reasoning-model",
+                    provider="anthropic",
+                    max_tokens=128,
+                )
+        self.assertEqual(build.call_args.kwargs["max_tokens"], 4096)
+
     async def test_run_summaries_keep_status_priority_and_duration(self):
         started = datetime(2026, 9, 15, 12, tzinfo=UTC)
         finished = started + timedelta(seconds=5)

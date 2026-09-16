@@ -1097,6 +1097,22 @@ async def get_artifact(artifact_id: str) -> SecurityFinding | None:
         return await db.get(SecurityFinding, artifact_id)
 
 
+async def delete_artifact(artifact_id: str) -> bool:
+    """删除单个看板产物（操作者清理动作）。返回是否删到。
+
+    只删 DB 行：secret 类的加密 blob 随其 engagement 的 secrets_vault 生命周期统一清理
+    （engagement end 时 purge），此处不做逐条 vault 清理（vault 无按 ref 删除的 API）。
+    """
+    sf = session_factory()
+    async with sf() as db:
+        row = await db.get(SecurityFinding, artifact_id)
+        if row is None:
+            return False
+        await db.delete(row)
+        await db.commit()
+        return True
+
+
 async def save_approval_history(
     *,
     decision_id: str,

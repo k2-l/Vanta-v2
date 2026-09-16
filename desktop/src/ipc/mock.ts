@@ -95,69 +95,8 @@ const store: {
   events: {
     "session-mock": buildRunHistory(),
   },
-  approvals: [
-    {
-      call_id: "apr_a1b2c3",
-      tool_name: "nmap",
-      message: "对 10.2.0.14 执行主动端口扫描（TCP 1-1024，单主机单次）",
-      session_id: "session-mock",
-      requested_at: new Date(Date.now() - 2 * 60_000).toISOString(),
-      expires_at: new Date(Date.now() + 3 * 60_000).toISOString(),
-      risk: "high",
-      risk_source: "declared",
-      target: "10.2.0.14",
-      scope: "隔离容器 · 授权范围 eng-mock",
-      impact: "将对目标执行主动 / 写入类操作，需明确授权",
-    },
-    {
-      call_id: "apr_d4e5f6",
-      tool_name: "http_probe",
-      message: "向 https://target-api.internal/login 提交注入验证请求（只读探测）",
-      session_id: "session-mock",
-      requested_at: new Date(Date.now() - 40_000).toISOString(),
-      expires_at: new Date(Date.now() + 4 * 60_000).toISOString(),
-      risk: "medium",
-      risk_source: "derived",
-      target: "https://target-api.internal/login",
-      scope: "本机 · 授权范围 eng-mock",
-      impact: "将访问外部资源或写入文件系统",
-    },
-  ],
-  decisions: [
-    {
-      decision_id: "dec_mock01",
-      call_id: "apr_seed01",
-      tool_name: "shell",
-      session_id: "session-mock",
-      decision: "rejected",
-      risk: "high",
-      risk_source: "derived",
-      target: "rm -rf ./build",
-      scope: "本机 · 无活跃 engagement",
-      impact: "可造成破坏性或不可逆操作，务必确认授权范围",
-      message: "确认执行工具 shell？",
-      decided_at: new Date(Date.now() - 18 * 60_000).toISOString(),
-      entry_hash: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
-    },
-    {
-      decision_id: "dec_mock_expired",
-      call_id: "apr_expired01",
-      tool_name: "shell",
-      session_id: "session-mock",
-      decision: "expired",
-      risk: "high",
-      risk_source: "derived",
-      target: "./release.sh",
-      scope: "本机 · 授权范围 eng-mock",
-      impact: "将对目标执行主动 / 写入类操作，需明确授权",
-      message: "执行发布脚本",
-      requested_at: new Date(Date.now() - 12 * 60_000).toISOString(),
-      expires_at: new Date(Date.now() - 7 * 60_000).toISOString(),
-      decided_at: new Date(Date.now() - 7 * 60_000).toISOString(),
-      audit_recorded: true,
-      entry_hash: "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3",
-    },
-  ],
+  approvals: [],
+  decisions: [],
   artifacts: [
     {
       id: "art_finding_1",
@@ -401,13 +340,30 @@ export async function mockInvoke<C extends keyof IpcContract>(
 
     case "api_request": {
       const operation = a?.operation as
-        | { op?: string; sessionId?: string; artifactId?: string; afterSeq?: number; limit?: number; kind?: string; callId?: string; approved?: boolean; title?: string }
+        | { op?: string; sessionId?: string; artifactId?: string; afterSeq?: number; limit?: number; kind?: string; callId?: string; approved?: boolean; title?: string; summary?: string; upto?: string }
         | undefined;
       if (operation?.op === "sessions.list") return delay(store.sessions.slice()) as never;
       if (operation?.op === "runs.list") return delay(mockRunSummaries(operation.limit)) as never;
       if (operation?.op === "sessions.messages") {
         return delay(store.messages[operation.sessionId ?? ""]?.slice() ?? []) as never;
       }
+      if (operation?.op === "sessions.compress.preview") {
+        const rows = store.messages[operation.sessionId ?? ""] ?? [];
+        if (!rows.length) {
+          return Promise.reject({ kind: "validation", message: "该会话没有可压缩的历史消息", retryable: false });
+        }
+        const transcript = rows.map((message) => `${message.role === "user" ? "用户" : "助手"}：${message.content}`).join("\n");
+        const summary = `## 当前目标\n延续本会话已有任务。\n\n## 已确认信息\n${transcript.slice(0, 360)}\n\n## 下一步\n根据用户的新指令继续处理。`;
+        return delay({
+          summary,
+          upto: rows.at(-1)?.created_at ?? new Date().toISOString(),
+          messages: rows.length,
+          // 浏览器样例代表已有较长上下文，保持压缩前后指标具备可视意义。
+          tokens_before: Math.max(620, Math.ceil(transcript.length / 4)),
+          tokens_after: Math.max(1, Math.ceil(summary.length / 4)),
+        }, 500) as never;
+      }
+      if (operation?.op === "sessions.compress.commit") return delay(undefined, 220) as never;
       if (operation?.op === "sessions.patch") {
         const idx = store.sessions.findIndex((s) => s.id === operation.sessionId);
         if (idx < 0) return Promise.reject({ kind: "notFound", message: "会话不存在", retryable: false });

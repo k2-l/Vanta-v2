@@ -87,7 +87,10 @@ async def audit_review(
             max_tokens=_AUDIT_MAX_TOKENS,
         )
         resp = await chat.ainvoke(
-            [SystemMessage(content=_AUDIT_SYSTEM), HumanMessage(content=payload)]
+            [SystemMessage(content=_AUDIT_SYSTEM), HumanMessage(content=payload)],
+            # 内部审批门：打 tag，让 runtime 的 astream_events 消费端把这次裁决的模型事件
+            # 整体排除出对话流；否则裁决 JSON 会作为 worker text_delta 漏进聊天。
+            config={"tags": ["audit_agent"]},
         )
         text = _extract_text(resp.content).strip()
         data = _extract_decision(text)

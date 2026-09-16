@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Activity, Pencil, Plus, RotateCw, Trash2, X } from "lucide-react";
+import { Activity, CheckCircle2, Minimize2, Pencil, Plus, RotateCw, Trash2, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/Button";
@@ -21,7 +21,7 @@ import {
   LoadingState,
   ErrorState,
 } from "@/components/desktop";
-import type { ChatMessage, SessionSummary } from "@/contracts/chat";
+import type { ChatMessage, CompressPreview, SessionSummary } from "@/contracts/chat";
 import { toClientError } from "@/contracts/errors";
 import { ipc } from "@/ipc/client";
 import { cn } from "@/lib/cn";
@@ -34,6 +34,8 @@ import { applyPacket, emptyProjection, type RunProjection } from "@/features/run
 import { RunDetailBody } from "@/features/runs/RunDetail";
 import { useRunProjection } from "@/features/runs/useRuns";
 import { StepList } from "@/features/chat/StepList";
+import { CompressionDialog } from "@/features/chat/CompressionDialog";
+import { InlineApprovals } from "@/features/chat/InlineApprovals";
 import { useIsModuleActive, useModuleNavigation } from "@/app/moduleNavigation";
 
 export function ChatPage() {
@@ -56,6 +58,9 @@ export function ChatPage() {
   const [projection, setProjection] = useState<RunProjection | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string>();
+  const [compressionPreview, setCompressionPreview] = useState<(CompressPreview & { sessionId: string }) | null>(null);
+  const [compressionSummary, setCompressionSummary] = useState("");
+  const [compressionNotice, setCompressionNotice] = useState<string>();
   const lastSentRef = useRef<string>("");
   const handleRef = useRef<string>();
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -90,14 +95,14 @@ export function ChatPage() {
   }, [newChat, selectedId, sessions.data]);
 
   const startNewChat = () => {
-    if (streaming) return;
+    if (streaming || compressPreview.isPending || compressCommit.isPending) return;
     setSelectedId(undefined);
     setNewChat(true);
     resetLive();
   };
 
   const selectSession = (id: string) => {
-    if (streaming) return;
+    if (streaming || compressPreview.isPending || compressCommit.isPending) return;
     setSelectedId(id);
     setNewChat(false);
     resetLive();
@@ -136,6 +141,50 @@ export function ChatPage() {
         resetLive();
       }
       queryClient.invalidateQueries({ queryKey: sessionsKey });
+    },
+    onError: (cause) => setError(toClientError(cause).message),
+  });
+
+  const compressPreview = useMutation<CompressPreview, unknown, string>({
+    mutationFn: async (sessionId) => {
+      const result = await ipc("api_request", {
+        connectionId: connectionId!,
+        operation: { op: "sessions.compress.preview", sessionId },
+      });
+      return result as CompressPreview;
+    },
+    onMutate: () => {
+      setError(undefined);
+      setCompressionNotice(undefined);
+    },
+    onSuccess: (preview, sessionId) => {
+      setCompressionPreview({ ...preview, sessionId });
+      setCompressionSummary(preview.summary);
+    },
+    onError: (cause) => setError(toClientError(cause).message),
+  });
+
+  const compressCommit = useMutation<unknown, unknown, { sessionId: string; summary: string; upto: string }>({
+    mutationFn: (input) =>
+      ipc("api_request", {
+        connectionId: connectionId!,
+        operation: {
+          op: "sessions.compress.commit",
+          sessionId: input.sessionId,
+          summary: input.summary,
+          upto: input.upto,
+        },
+      }),
+    onSuccess: async () => {
+      const messages = compressionPreview?.messages ?? 0;
+      const before = compressionPreview?.tokens_before ?? 0;
+      const after = compressionPreview?.tokens_after ?? 0;
+      setCompressionPreview(null);
+      setCompressionSummary("");
+      setCompressionNotice(`已压缩 ${messages} 条消息，估算上下文 ${before} → ${after} tokens`);
+      if (selectedId) {
+        await queryClient.invalidateQueries({ queryKey: ["budget", connectionId, selectedId] });
+      }
     },
     onError: (cause) => setError(toClientError(cause).message),
   });
@@ -244,6 +293,7 @@ export function ChatPage() {
   };
 
   const connected = Boolean(connectionId && authenticated);
+  const compressionBusy = compressPreview.isPending || compressCommit.isPending;
   const showRunSummary = !streaming && liveMatches && projection && projection.phaseOrder.length > 0;
 
   const rail = (
@@ -274,7 +324,7 @@ export function ChatPage() {
                   key={session.id}
                   session={session}
                   selected={selectedId === session.id}
-                  disabled={streaming}
+                  disabled={streaming || compressionBusy}
                   deleting={deleteSession.isPending}
                   onSelect={() => selectSession(session.id)}
                   onRename={(title) => renameSession.mutate({ id: session.id, title })}
@@ -360,6 +410,19 @@ export function ChatPage() {
           </div>
 
           <div className="shrink-0 px-6 pb-5">
+            <InlineApprovals sessionId={selectedId} streaming={streaming} />
+            {compressionNotice && (
+              <div
+                className="mx-auto mb-2 flex max-w-3xl items-center gap-2 rounded-[var(--radius)] border px-3 py-2 text-[12px]"
+                style={{ borderColor: "var(--ok)", background: "var(--ok-tint)", color: "var(--fg)" }}
+              >
+                <CheckCircle2 size={14} style={{ color: "var(--ok)" }} />
+                <span className="flex-1">{compressionNotice}</span>
+                <button aria-label="关闭提示" onClick={() => setCompressionNotice(undefined)} style={{ color: "var(--fg-muted)" }}>
+                  <X size={14} />
+                </button>
+              </div>
+            )}
             {error && (
               <div
                 className="mx-auto mb-2 flex max-w-3xl items-center gap-3 rounded-[var(--radius)] border px-3 py-2"
@@ -380,6 +443,42 @@ export function ChatPage() {
               onSend={() => void send(draft)}
               onStop={() => void stop()}
               streaming={streaming}
+              footer={
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  disabled={
+                    streaming ||
+                    compressionBusy ||
+                    !selectedId ||
+                    history.isLoading ||
+                    !history.data?.length
+                  }
+                  title={!selectedId ? "请先选择一个已有会话" : "生成可编辑摘要后再确认应用"}
+                  onClick={() => selectedId && compressPreview.mutate(selectedId)}
+                >
+                  <Minimize2 size={13} />
+                  {compressPreview.isPending ? "正在生成压缩预览…" : "压缩上下文"}
+                </Button>
+              }
+            />
+            <CompressionDialog
+              preview={compressionPreview}
+              summary={compressionSummary}
+              pending={compressCommit.isPending}
+              onSummaryChange={setCompressionSummary}
+              onClose={() => {
+                setCompressionPreview(null);
+                setCompressionSummary("");
+              }}
+              onCommit={() => {
+                if (!compressionPreview || !compressionSummary.trim()) return;
+                compressCommit.mutate({
+                  sessionId: compressionPreview.sessionId,
+                  summary: compressionSummary.trim(),
+                  upto: compressionPreview.upto,
+                });
+              }}
             />
           </div>
         </>

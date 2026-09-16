@@ -31,6 +31,7 @@ from harness.routes import chat as chat_routes
 from harness.routes import config as config_routes
 from harness.routes import containers as container_routes
 from harness.security import approvals
+from harness.security.permissions import evaluate
 from harness.tools.builtin.cmd.shell import ShellExecTool
 from harness.tools.builtin.web._net import safe_public_url
 from harness.tools.exec_context import (
@@ -41,9 +42,14 @@ from harness.tools.exec_context import (
 
 
 class ApprovalAndExecutionTests(unittest.IsolatedAsyncioTestCase):
-    def test_bash_always_requires_high_risk_approval(self) -> None:
-        self.assertTrue(ShellExecTool.requires_approval)
+    def test_bash_approval_follows_command_risk(self) -> None:
+        self.assertFalse(ShellExecTool.requires_approval)
         self.assertEqual(ShellExecTool.risk_level, "high")
+        self.assertEqual(evaluate("Bash", {"command": "pwd"}), "allow")
+        self.assertEqual(evaluate("Bash", {"command": "rg TODO harness"}), "allow")
+        self.assertEqual(evaluate("Bash", {"command": "python script.py"}), "ask")
+        self.assertEqual(evaluate("Bash", {"command": "new-unknown-command"}), "ask")
+        self.assertEqual(evaluate("Bash", {"command": "rm -rf /"}), "deny")
 
     async def test_timeout_boundary_accepts_completed_approval(self) -> None:
         async def timeout_after_completion(_awaitable, **kwargs):

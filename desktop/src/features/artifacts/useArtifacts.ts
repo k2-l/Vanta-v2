@@ -4,7 +4,7 @@
  * 写侧/导出不在此暴露：artifact 仅由 agent 的 board 工具产出，导出受 capability 门控。
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ipc } from "@/ipc/client";
 import { useConnection } from "@/stores/connection";
 import type { ArtifactWire } from "@/contracts/resources";
@@ -24,6 +24,22 @@ export function useArtifacts(kind?: string, sessionId?: string, requireSession =
         operation: { op: "artifacts.list", kind, sessionId },
       });
       return Array.isArray(result) ? (result as ArtifactWire[]) : [];
+    },
+  });
+}
+
+/** 删除单个看板产物（操作者清理）；成功后失效所有 artifacts 查询（跨 kind/来源筛选）。 */
+export function useDeleteArtifact() {
+  const connectionId = useConnection((s) => s.activeConnectionId);
+  const qc = useQueryClient();
+  return useMutation<unknown, unknown, string>({
+    mutationFn: (artifactId) =>
+      ipc("api_request", {
+        connectionId: connectionId!,
+        operation: { op: "artifacts.delete", artifactId },
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["artifacts", connectionId] });
     },
   });
 }

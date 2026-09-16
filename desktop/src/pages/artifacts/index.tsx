@@ -32,6 +32,7 @@ import {
   sensitivityMeta,
   severityMeta,
   useArtifacts,
+  useDeleteArtifact,
 } from "@/features/artifacts/useArtifacts";
 
 function bytesOf(content?: string): number {
@@ -53,6 +54,7 @@ export function ArtifactsPage() {
   const [exportMessage, setExportMessage] = useState<{ text: string; error?: boolean }>();
 
   const artifacts = useArtifacts();
+  const deleteArtifact = useDeleteArtifact();
   const all = artifacts.data ?? [];
 
   const kinds = useMemo(() => Array.from(new Set(all.map((a) => a.kind))), [all]);
@@ -192,6 +194,8 @@ export function ArtifactsPage() {
                 model={toModel(selected)}
                 onExport={() => exportArtifact(selected)}
                 exporting={exportingId === selected.id}
+                onDelete={() => deleteArtifact.mutate(selected.id)}
+                deleting={deleteArtifact.isPending && deleteArtifact.variables === selected.id}
                 onOpenSourceChat={selected.source_session_id ? () => openSource("chat", selected.source_session_id) : undefined}
                 onOpenSourceRun={selected.source_run_id ? () => openSource("runs", selected.source_run_id) : undefined}
               />

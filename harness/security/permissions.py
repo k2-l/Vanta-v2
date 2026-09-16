@@ -159,7 +159,11 @@ def _eval_subject(
         return "allow"
     if _match(tool_name, subject, rules.ask):
         return "ask"
-    # host 默认放行（CC「跑任意命令」；危险命令由 ask/deny 规则显式拦截）
+    # 未知 Bash 命令没有足够证据判定为只读：host 上默认询问，避免新增/别名命令
+    # 绕过风险列表。其它工具仍按其独立契约默认放行。
+    if tool_name in _BASH_TOOLS:
+        return "ask"
+    # 非 Bash 工具默认放行；需要强制审批的工具仍由 requires_approval 升级为 ask。
     return "allow"
 
 
