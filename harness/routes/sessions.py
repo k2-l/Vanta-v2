@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Response
 
 from harness.app.auth import require_auth
@@ -28,7 +30,7 @@ _ROLE_LABELS = {"user": "用户", "assistant": "助手", "system": "系统"}
 
 @router.get("/sessions", response_model=list[SessionOut])
 async def list_sessions(limit: int = 50):
-    sessions = await db.list_sessions(limit=limit)
+    sessions = await db.list_sessions(limit=max(1, min(limit, 200)))
     return [
         SessionOut(id=s.id, title=s.title, created_at=s.created_at, updated_at=s.updated_at)
         for s in sessions
@@ -57,10 +59,7 @@ async def get_session(session_id: str):
 
 @router.patch("/sessions/{session_id}", response_model=SessionOut)
 async def patch_session(session_id: str, req: SessionUpdate):
-    ok = await db.update_title(session_id, req.title)
-    if not ok:
-        raise HTTPException(404, f"会话不存在：{session_id}")
-    s = await db.get_session(session_id)
+    s = await db.update_title(session_id, req.title)
     if s is None:
         raise HTTPException(404, f"会话不存在：{session_id}")
     return SessionOut(id=s.id, title=s.title, created_at=s.created_at, updated_at=s.updated_at)
@@ -75,11 +74,12 @@ async def delete_session(session_id: str):
 
 
 @router.get("/sessions/{session_id}/messages", response_model=list[MessageOut])
-async def list_messages(session_id: str, limit: int = 200):
+async def list_messages(session_id: str, limit: int = 200, before: datetime | None = None):
+    """会话消息（正序）。默认返回最近 limit 条；传 before（上一页最早消息的 created_at）向前翻页。"""
     s = await db.get_session(session_id)
     if s is None:
         raise HTTPException(404, f"会话不存在：{session_id}")
-    msgs = await db.recent_messages(session_id, n=limit)
+    msgs = await db.recent_messages(session_id, n=max(1, min(limit, 500)), before=before)
     return [
         MessageOut(id=m.id, role=m.role, content=m.content, created_at=m.created_at)
         for m in msgs
@@ -88,64 +88,85 @@ async def list_messages(session_id: str, limit: int = 200):
 
 @router.post("/sessions/{session_id}/compress/preview", response_model=CompressPreviewOut)
 async def compress_preview(session_id: str):
-    """主动压缩「预览」：把当前会话截至此刻的原文压成结构化摘要返回，**不落库**。
+    """主动压缩「预览」：把上次检查点之后到此刻的**全部**原文折叠成结构化摘要返回，**不落库**。
 
-    用户可编辑摘要后再调 commit 生效。原文一律保留在 DB，可回退。
+    覆盖完整未压缩区间——超 token 上限时分段折叠（不做尾部截断），避免中段历史被静默丢弃。
+    用户可编辑摘要后再调 commit 生效；原文一律保留在 DB，可回退。
     """
     s = await db.get_session(session_id)
     if s is None:
         raise HTTPException(404, f"会话不存在：{session_id}")
 
-    msgs = await db.messages_upto(session_id)  # 全部历史至今，正序
-    if not msgs:
-        raise HTTPException(400, "该会话没有可压缩的历史消息")
+    prev_summary, prev_upto = await db.get_compaction(session_id)
+    # 只折叠上次检查点之后的新原文（DB 侧过滤）；更早的已在 prev_summary 内，重复计入会双算。
+    new_msgs = await db.messages_after(session_id, after=prev_upto)
+    if not new_msgs:
+        raise HTTPException(400, "没有可压缩的新历史消息（检查点之后无新增）")
 
-    upto = msgs[-1].created_at  # 检查点边界 = 此刻最后一条消息的时间
     st = get_settings()
+    upto = new_msgs[-1].created_at  # 检查点边界 = 服务端已知的最后一条消息时间
 
-    # 从最近往前保留在 token 上限内的原文；更早部分由已有摘要覆盖（从原文整体重生成）
-    kept: list = []
-    used = 0
-    for m in reversed(msgs):
+    # 按 token 上限切块，逐块折叠进滚动摘要——完整覆盖每条未压缩消息，绝不截断丢弃。
+    budget = max(1, st.compaction_input_max_tokens)
+    chunks: list[list] = []
+    cur: list = []
+    cur_tokens = 0
+    tokens_before = 0
+    for m in new_msgs:
         t = count_tokens(m.content)
-        if kept and used + t > st.compaction_input_max_tokens:
-            break
-        kept.append(m)
-        used += t
-    kept.reverse()
+        tokens_before += t
+        if cur and cur_tokens + t > budget:
+            chunks.append(cur)
+            cur, cur_tokens = [], 0
+        cur.append(m)
+        cur_tokens += t
+    if cur:
+        chunks.append(cur)
 
-    transcript = "\n\n".join(f"{_ROLE_LABELS.get(m.role, m.role)}：{m.content}" for m in kept)
-    prev_summary, _ = await db.get_compaction(session_id)
-
+    provider = resolve_provider(st.model_low_provider, st.model_low)
+    summary = prev_summary
     try:
-        summary = await compact_session_history(
-            transcript,
-            prev_summary=prev_summary,
-            model_name=st.model_low,
-            provider=resolve_provider(st.model_low_provider, st.model_low),
-            max_tokens=st.summarize_max_tokens,
-        )
+        for chunk in chunks:
+            transcript = "\n\n".join(
+                f"{_ROLE_LABELS.get(m.role, m.role)}：{m.content}" for m in chunk
+            )
+            summary = await compact_session_history(
+                transcript,
+                prev_summary=summary,
+                model_name=st.model_low,
+                provider=provider,
+                max_tokens=st.summarize_max_tokens,
+            )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"压缩失败，请稍后重试：{str(exc)[:200]}") from exc
 
     return CompressPreviewOut(
         summary=summary,
         upto=upto,
-        messages=len(kept),
-        tokens_before=used,
+        messages=len(new_msgs),
+        tokens_before=tokens_before,
         tokens_after=count_tokens(summary),
     )
 
 
 @router.post("/sessions/{session_id}/compress/commit", status_code=204)
 async def compress_commit(session_id: str, req: CompressCommitRequest):
-    """主动压缩「提交」：把（可能编辑过的）摘要 + 检查点写入会话，之后按检查点装载历史。"""
+    """主动压缩「提交」：把（可能编辑过的）摘要 + 检查点写入会话，之后按检查点装载历史。
+
+    检查点由服务端钳到真实边界内（≤ 最新消息时间），防止越界 upto 把未摘要的消息挤出上下文。
+    """
     s = await db.get_session(session_id)
     if s is None:
         raise HTTPException(404, f"会话不存在：{session_id}")
     if not req.summary.strip():
         raise HTTPException(400, "摘要不能为空")
-    await db.set_compaction(session_id, req.summary, req.upto)
+    latest = await db.latest_message_at(session_id)
+    if latest is None:
+        raise HTTPException(400, "该会话没有消息，无法设置压缩检查点")
+    # 客户端回传的 upto 只作参考：归一化时区并钳到最新消息，绝不晚于真实边界。
+    upto = req.upto if req.upto.tzinfo else req.upto.replace(tzinfo=UTC)
+    upto = min(upto, latest)
+    await db.set_compaction(session_id, req.summary, upto)
     return Response(status_code=204)
 
 
