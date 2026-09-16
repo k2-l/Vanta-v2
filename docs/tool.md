@@ -1,6 +1,6 @@
 # Tool 接入规范
 
-**协议 B · 可执行动作 · 代码驱动。** Tool = 模型能真正"做事"的最小可执行单元。builtin / MCP / plugin 三类来源**最终都产出 `Tool`**，落进同一个 `registry`，由 `tool_node` 统一执行。本页讲**内置工具**（写代码接入）；MCP / plugin 见各自页。
+**工具接入协议 · 可执行动作 · 代码驱动。** Tool = 模型能真正"做事"的最小可执行单元。builtin / MCP / plugin 三类来源**最终都产出 `Tool`**，落进同一个 `registry`，由 `tool_node` 统一执行。本页讲**内置工具**（写代码接入）；MCP / plugin 见各自页。
 
 ## 基类：`Tool`
 

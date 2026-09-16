@@ -21,8 +21,8 @@ workspace/                           Agent / Skill 文件及工具工作目录
 
 能力接入规范与示例见 **[docs/ 能力接入 Wiki](./docs/README.md)**：
 
-- [skill.md](./docs/skill.md) · [agent.md](./docs/agent.md) — 声明式能力（协议 A，文件驱动）
-- [tool.md](./docs/tool.md) · [mcp.md](./docs/mcp.md) · [plugin.md](./docs/plugin.md) — 可执行动作（协议 B，统一接入）
+- [skill.md](./docs/skill.md) · [agent.md](./docs/agent.md) — 声明式能力（文件驱动协议）
+- [tool.md](./docs/tool.md) · [mcp.md](./docs/mcp.md) · [plugin.md](./docs/plugin.md) — 可执行动作（工具接入协议）
 - [Tauri Desktop GUI 定稿规范](./docs/tauri-desktop-gui-spec.md) · [实施 Plan](./docs/tauri-desktop-implementation-plan.md)
 
 ---
@@ -50,11 +50,11 @@ cd desktop && npm install && npm run tauri:dev
 |------|------|
 | `harness/core/` | LangGraph 图/节点、协调器、记忆、Token 预算、子图、运行时 |
 | `harness/routes/` | 所有 HTTP endpoint（chat / sessions / skills / agents / knowledge / containers / workspace / config / mcp / ws） |
-| `harness/agents/`·`harness/skills/` | 协议 A 领域模块：加载 / 注册 / frontmatter |
-| `harness/contracts/` | 协议 A 底座：`BaseFileProvider` · `EntityProvider` · frontmatter（agent/skill 共用的文件驱动契约） |
+| `harness/agents/`·`harness/skills/` | 文件驱动协议领域模块：加载 / 注册 / frontmatter |
+| `harness/contracts/` | 文件驱动协议底座：`BaseFileProvider` · `EntityProvider` · frontmatter（agent/skill 共用的文件驱动契约） |
 | `harness/infra/` | SQLAlchemy、向量库（Qdrant Cloud）、EventBus、JWT、settings、podman |
 | `harness/security/` | 护栏：engagement / 沙箱 / 审计 / 脱敏 / 加密库 / 权限 |
-| `harness/tools/` | 协议 B：工具基类·注册表·统一来源协议（`ToolSource`）；builtin/{cmd,security,web,orchestration} · mcp · sources/plugin |
+| `harness/tools/` | 工具接入协议：工具基类·注册表·统一来源协议（`ToolSource`）；builtin/{cmd,security,web,orchestration} · mcp · sources/plugin |
 | `harness/app/` + `harness/main.py` | FastAPI 装配 + 启动入口 |
 | `workspace/` | Agent / Skill Markdown 与受控工具工作目录 |
 | `data/` | `config.toml` 运行时配置（向量库用 Qdrant Cloud，无本地 chroma） |
@@ -63,7 +63,7 @@ cd desktop && npm install && npm run tauri:dev
 
 ## Workspace 文件格式
 
-Agent / Skill 是文件驱动的（协议 A）：`workspace/agents/<name>/AGENT.md`、`workspace/skills/<name>/SKILL.md`，均为 YAML frontmatter + markdown 正文。
+Agent / Skill 走文件驱动协议：`workspace/agents/<name>/AGENT.md`、`workspace/skills/<name>/SKILL.md`，均为 YAML frontmatter + markdown 正文。
 
 ```markdown
 ---

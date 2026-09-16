@@ -1,6 +1,6 @@
 # Plugin 接入规范
 
-**协议 B · 可执行动作 · 接入驱动。** Plugin 是**新的可插拔工具来源**：一个本地包，暴露 `get_tools()` 工厂产出 `Tool` 列表。它与 builtin / MCP 走**同一套 `ToolSource` 接入协议**——加一个来源 = 实现一个方法，不改 harness 任何代码。
+**工具接入协议 · 可执行动作 · 接入驱动。** Plugin 是**新的可插拔工具来源**：一个本地包，暴露 `get_tools()` 工厂产出 `Tool` 列表。它与 builtin / MCP 走**同一套 `ToolSource` 接入协议**——加一个来源 = 实现一个方法，不改 harness 任何代码。
 
 ## 落点与开关
 

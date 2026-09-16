@@ -1,6 +1,6 @@
 # MCP 接入规范
 
-**协议 B · 可执行动作 · 接入驱动（零代码）。** MCP（Model Context Protocol）server 是外部 stdio 子进程，Vanta 把它暴露的每个远端工具**包装成本地 `Tool`**（名为 `mcp__<server>__<tool>`），落进同一 `registry`。接入一个 MCP server 只需**配置**，不写代码。
+**工具接入协议 · 可执行动作 · 接入驱动（零代码）。** MCP（Model Context Protocol）server 是外部 stdio 子进程，Vanta 把它暴露的每个远端工具**包装成本地 `Tool`**（名为 `mcp__<server>__<tool>`），落进同一 `registry`。接入一个 MCP server 只需**配置**，不写代码。
 
 ## 两种接入方式
 
@@ -39,7 +39,7 @@ env 脱敏：`GET` 只回 env 的 key 名，不回明文 value。
 
 ## 底层：统一来源协议
 
-MCP 走的是协议 B 的统一接入协议（`harness/tools/source.py`）：
+MCP 走的是工具接入协议的统一来源接入（`harness/tools/source.py`）：
 
 ```
 每个 MCP server = 一个 MCPSource(ToolSource)   # id = mcp:<name>
