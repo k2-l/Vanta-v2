@@ -362,7 +362,12 @@ export function ManageContainerDialog({ container, onClose }: { container: Conta
                 <h3 className="text-[13px] font-semibold" style={{ color: "var(--fg)" }}>Agent Runtime Profile</h3>
                 <p className="mt-0.5 text-[10px]" style={{ color: "var(--fg-subtle)" }}>能力标签用于任务匹配；开启接入时后端会执行真实容器探针。</p>
               </div>
-              {profile.data && <StatusBadge tone={profile.data.agent_ready ? "ok" : "neutral"}>{profile.data.agent_ready ? profile.data.health_status : "未接入"}</StatusBadge>}
+              {profile.data && (
+                <div className="flex items-center gap-2">
+                  {profile.data.active_leases > 0 && <StatusBadge tone="accent">Agent 占用 {profile.data.active_leases}/{profile.data.max_concurrency}</StatusBadge>}
+                  <StatusBadge tone={profile.data.agent_ready ? "ok" : "neutral"}>{profile.data.agent_ready ? profile.data.health_status : "未接入"}</StatusBadge>
+                </div>
+              )}
             </div>
             <div className="mt-3 grid grid-cols-2 gap-3">
               <Control label="能力标签" hint="逗号分隔，如 jdk17, semgrep。">
@@ -371,10 +376,10 @@ export function ManageContainerDialog({ container, onClose }: { container: Conta
               <Control label="用途">
                 <input className={controlClass} style={controlStyle} value={draft.purpose} onChange={(event) => setDraft({ ...draft, purpose: event.target.value })} />
               </Control>
-              <Control label="网络策略">
+              <Control label="网络策略" hint="internet 会从容器内部执行真实 HTTPS 出网探针，不只检查 bridge 配置。">
                 <select className={controlClass} style={controlStyle} value={draft.networkPolicy} onChange={(event) => setDraft({ ...draft, networkPolicy: event.target.value as ProfileDraft["networkPolicy"] })}>
                   <option value="none">none（容器实际必须禁网）</option>
-                  <option value="internet">internet（容器实际必须联网）</option>
+                  <option value="internet">internet（验证 DNS/TLS/HTTPS 出网）</option>
                 </select>
               </Control>
               <Control label="工作区权限">
@@ -399,13 +404,18 @@ export function ManageContainerDialog({ container, onClose }: { container: Conta
             <label className="mt-4 flex cursor-pointer items-center justify-between rounded-[var(--radius)] border px-3 py-2.5" style={{ borderColor: draft.agentReady ? "var(--accent)" : "var(--border)", background: draft.agentReady ? "var(--accent-tint)" : "var(--surface-inset)" }}>
               <span>
                 <span className="block text-[12px] font-medium" style={{ color: "var(--fg)" }}>允许 Agent 自动选择</span>
-                <span className="block text-[10px]" style={{ color: "var(--fg-subtle)" }}>保存时立即验证运行状态、网络策略和公共命令。</span>
+                <span className="block text-[10px]" style={{ color: "var(--fg-subtle)" }}>保存时立即验证；异常退出后 Agent 可按需自动启动，任务结束后保持运行。</span>
               </span>
               <input type="checkbox" checked={draft.agentReady} onChange={(event) => setDraft({ ...draft, agentReady: event.target.checked })} />
             </label>
 
             {readiness.data && (
-              <div className="mt-3"><Message text={readiness.data.reason} error={!readiness.data.ready} /></div>
+              <div className="mt-3">
+                <Message
+                  text={`${readiness.data.reason}${readiness.data.network_mode ? ` · 网络模式 ${readiness.data.network_mode}` : ""}${readiness.data.network_access !== "not_checked" ? ` · 出网 ${readiness.data.network_access === "available" ? "可用" : readiness.data.network_access === "disabled" ? "已禁用" : "不可用"}` : ""}`}
+                  error={!readiness.data.ready}
+                />
+              </div>
             )}
             <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
               <div className="flex gap-2">

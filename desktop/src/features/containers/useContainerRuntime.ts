@@ -34,6 +34,7 @@ export function useContainerProfile(containerId?: string) {
     queryKey: ["container-profile", connectionId, containerId],
     enabled: Boolean(connectionId && authenticated && containerId),
     retry: false,
+    refetchInterval: 5_000,
     queryFn: async () => {
       try {
         return (await ipc("api_request", {

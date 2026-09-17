@@ -233,16 +233,16 @@ impl ApiOperation {
             Duration::from_secs(150)
         } else if matches!(
             self,
-            ApiOperation::McpCreate { .. }
+            ApiOperation::ContainersStart { .. }
+                | ApiOperation::McpCreate { .. }
                 | ApiOperation::McpUpdate { .. }
                 | ApiOperation::McpTest { .. }
         ) {
-            // npx/uvx 类型 MCP 首次启动可能需要联网下载依赖，覆盖后端 120 秒初始化窗口。
+            // 容器生命周期和 npx/uvx MCP 冷启动均可能达到 120 秒。
             Duration::from_secs(150)
         } else if matches!(
             self,
-            ApiOperation::ContainersStart { .. }
-                | ApiOperation::ContainersStop { .. }
+            ApiOperation::ContainersStop { .. }
                 | ApiOperation::ContainersDelete { .. }
                 | ApiOperation::ContainersReadiness { .. }
                 | ApiOperation::ContainersProfilePut { .. }

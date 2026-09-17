@@ -9,15 +9,16 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from harness.app.auth import require_auth
 from harness.infra import podman
-from harness.infra.db import ContainerProfile, ContainerRecord, session_factory
+from harness.infra.db import ContainerLease, ContainerProfile, ContainerRecord, session_factory
 from harness.infra.logging import log
 from harness.routes._utils import container_to_dict, get_or_404
 
@@ -105,7 +106,18 @@ class ContainerProfileRequest(BaseModel):
         return result
 
 
-def _profile_to_dict(profile: ContainerProfile) -> dict:
+async def _active_lease_count(db, container_record_id: str) -> int:
+    count = await db.scalar(
+        select(func.count(ContainerLease.id)).where(
+            ContainerLease.container_record_id == container_record_id,
+            ContainerLease.status == "active",
+            ContainerLease.expires_at > datetime.now(UTC),
+        )
+    )
+    return int(count or 0)
+
+
+def _profile_to_dict(profile: ContainerProfile, *, active_leases: int = 0) -> dict:
     return {
         "container_record_id": profile.container_record_id,
         "capabilities": list(profile.capabilities or []),
@@ -117,6 +129,7 @@ def _profile_to_dict(profile: ContainerProfile) -> dict:
         "max_concurrency": profile.max_concurrency,
         "agent_ready": profile.agent_ready,
         "health_status": profile.health_status,
+        "active_leases": active_leases,
         "created_at": profile.created_at.isoformat() if profile.created_at else None,
         "updated_at": profile.updated_at.isoformat() if profile.updated_at else None,
     }
@@ -165,7 +178,10 @@ async def get_container_profile(
         profile = await db.get(ContainerProfile, cid)
         if profile is None:
             raise HTTPException(404, "容器尚未配置 Agent runtime Profile")
-        return _profile_to_dict(profile)
+        return _profile_to_dict(
+            profile,
+            active_leases=await _active_lease_count(db, cid),
+        )
 
 
 @router.put("/containers/{cid}/profile")
@@ -177,6 +193,17 @@ async def put_container_profile(
     """Create/update the explicit opt-in profile used by automatic Agent selection."""
     async with session_factory()() as db:
         rec = await get_or_404(db, ContainerRecord, cid, "容器不存在")
+        profile = await db.scalar(
+            select(ContainerProfile)
+            .where(ContainerProfile.container_record_id == cid)
+            .with_for_update()
+        )
+        active_leases = await _active_lease_count(db, cid)
+        if active_leases:
+            raise HTTPException(
+                409,
+                f"容器正被 {active_leases} 个 Agent invocation 使用，不能修改 Profile",
+            )
         if req.agent_ready:
             readiness = await podman.probe_agent_runtime(
                 rec.container_id,
@@ -193,7 +220,6 @@ async def put_container_profile(
                     reason=readiness.reason[:200],
                 )
                 raise HTTPException(409, readiness.reason)
-        profile = await db.get(ContainerProfile, cid)
         if profile is None:
             profile = ContainerProfile(container_record_id=cid)
             db.add(profile)
@@ -214,7 +240,7 @@ async def put_container_profile(
             agent_ready=profile.agent_ready,
             capability_count=len(profile.capabilities or []),
         )
-        return _profile_to_dict(profile)
+        return _profile_to_dict(profile, active_leases=0)
 
 
 @router.delete("/containers/{cid}/profile", status_code=204)
@@ -248,7 +274,12 @@ async def container_readiness(
         require_write=bool(profile and profile.workspace_mode == "read-write"),
         expected_network_policy=profile.network_policy if profile else "",
     )
-    return {"ready": readiness.ready, "reason": readiness.reason}
+    return {
+        "ready": readiness.ready,
+        "reason": readiness.reason,
+        "network_mode": readiness.network_mode,
+        "network_access": readiness.network_access,
+    }
 
 
 @router.post("/containers", status_code=201)

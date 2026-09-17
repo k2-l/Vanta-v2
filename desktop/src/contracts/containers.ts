@@ -34,16 +34,23 @@ export type ContainerProfileWire = {
   max_concurrency: number;
   agent_ready: boolean;
   health_status: string;
+  active_leases: number;
   created_at?: string | null;
   updated_at?: string | null;
 };
 
 export type ContainerProfileInput = Omit<
   ContainerProfileWire,
-  "container_record_id" | "health_status" | "created_at" | "updated_at"
+  | "container_record_id"
+  | "health_status"
+  | "active_leases"
+  | "created_at"
+  | "updated_at"
 >;
 
 export type ContainerReadiness = {
   ready: boolean;
   reason: string;
+  network_mode: string;
+  network_access: "not_checked" | "disabled" | "available" | "unavailable" | string;
 };

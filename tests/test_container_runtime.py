@@ -11,6 +11,7 @@ from harness.core.runtime_resolver import (
     RuntimeCandidate,
     RuntimeRequirements,
     RuntimeResolutionError,
+    _ensure_running,
     rank_candidates,
 )
 from harness.infra import podman
@@ -86,6 +87,77 @@ class RuntimeSelectionTests(unittest.TestCase):
 
 
 class RuntimeReadinessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_opted_in_runtime_is_auto_started_and_kept_available(self) -> None:
+        candidate = _candidate("java", capabilities=("jdk17",))
+        with (
+            patch.object(
+                podman,
+                "is_running",
+                new=AsyncMock(side_effect=[False, True]),
+            ),
+            patch.object(podman, "start", new=AsyncMock()) as start,
+            patch(
+                "harness.core.runtime_resolver._set_health",
+                new=AsyncMock(),
+            ) as set_health,
+            patch(
+                "harness.core.runtime_resolver._set_record_status",
+                new=AsyncMock(),
+            ) as set_status,
+        ):
+            running, reason = await _ensure_running(candidate)
+
+        self.assertTrue(running)
+        self.assertEqual(reason, "")
+        start.assert_awaited_once_with(candidate.podman_id)
+        set_health.assert_awaited_once_with(candidate.record_id, "starting")
+        set_status.assert_awaited_once_with(candidate.record_id, "running")
+
+    async def test_auto_started_short_lived_container_is_rejected(self) -> None:
+        candidate = _candidate("short-lived", capabilities=("shell",))
+        with (
+            patch.object(
+                podman,
+                "is_running",
+                new=AsyncMock(side_effect=[False, False]),
+            ),
+            patch.object(podman, "start", new=AsyncMock()),
+            patch(
+                "harness.core.runtime_resolver._set_health",
+                new=AsyncMock(),
+            ),
+            patch(
+                "harness.core.runtime_resolver._set_record_status",
+                new=AsyncMock(),
+            ) as set_status,
+        ):
+            running, reason = await _ensure_running(candidate)
+
+        self.assertFalse(running)
+        self.assertIn("未保持运行", reason)
+        set_status.assert_not_awaited()
+
+    async def test_container_start_uses_lifecycle_timeout(self) -> None:
+        with patch.object(
+            podman, "_podman", new=AsyncMock(return_value=(0, "container-id", ""))
+        ) as command:
+            await podman.start("container-id")
+
+        command.assert_awaited_once_with("start", "container-id", timeout=120)
+
+    async def test_container_start_accepts_timeout_when_daemon_reports_running(self) -> None:
+        with (
+            patch.object(
+                podman,
+                "_podman",
+                new=AsyncMock(return_value=(124, "", "podman timeout(>120s)")),
+            ),
+            patch.object(podman, "is_running", new=AsyncMock(return_value=True)) as running,
+        ):
+            await podman.start("container-id")
+
+        running.assert_awaited_once_with("container-id")
+
     async def test_none_network_profile_requires_live_none_network(self) -> None:
         with (
             patch.object(podman, "is_running", new=AsyncMock(return_value=True)),
@@ -122,6 +194,56 @@ class RuntimeReadinessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(command[:2], ["sh", "-c"])
         self.assertIn("command -v tee", command[2])
         self.assertIn("test -w /workspace", command[2])
+
+    async def test_internet_profile_requires_real_https_egress(self) -> None:
+        with (
+            patch.object(podman, "is_running", new=AsyncMock(return_value=True)),
+            patch.object(podman, "network_mode", new=AsyncMock(return_value="bridge")),
+            patch.object(
+                podman,
+                "exec",
+                new=AsyncMock(
+                    side_effect=[
+                        podman.ExecResult(0, "", ""),
+                        podman.ExecResult(0, "", ""),
+                    ]
+                ),
+            ) as execute,
+        ):
+            result = await podman.probe_agent_runtime(
+                "podman-1",
+                expected_network_policy="internet",
+            )
+
+        self.assertTrue(result.ready)
+        self.assertEqual(result.network_mode, "bridge")
+        self.assertEqual(result.network_access, "available")
+        self.assertEqual(execute.await_count, 2)
+        self.assertIn("https://example.com/", execute.await_args_list[1].args[1][2])
+
+    async def test_internet_profile_rejects_bridge_without_egress(self) -> None:
+        with (
+            patch.object(podman, "is_running", new=AsyncMock(return_value=True)),
+            patch.object(podman, "network_mode", new=AsyncMock(return_value="bridge")),
+            patch.object(
+                podman,
+                "exec",
+                new=AsyncMock(
+                    side_effect=[
+                        podman.ExecResult(0, "", ""),
+                        podman.ExecResult(6, "", "Could not resolve host"),
+                    ]
+                ),
+            ),
+        ):
+            result = await podman.probe_agent_runtime(
+                "podman-1",
+                expected_network_policy="internet",
+            )
+
+        self.assertFalse(result.ready)
+        self.assertEqual(result.network_access, "unavailable")
+        self.assertIn("HTTPS 出网探针失败", result.reason)
 
 
 class RunAgentRuntimeBindingTests(unittest.IsolatedAsyncioTestCase):

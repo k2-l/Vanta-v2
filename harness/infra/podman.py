@@ -14,6 +14,9 @@ from dataclasses import dataclass
 
 from harness.infra.logging import log
 
+_START_TIMEOUT = 120
+_EGRESS_PROBE_URL = "https://example.com/"
+
 
 @dataclass
 class ContainerSummary:
@@ -35,6 +38,29 @@ class ExecResult:
 class RuntimeReadiness:
     ready: bool
     reason: str
+    network_mode: str = ""
+    network_access: str = "not_checked"  # not_checked | disabled | available | unavailable
+
+
+async def probe_network_egress(container_id: str) -> ExecResult:
+    """Verify usable HTTPS egress from inside the container with a fixed safe target.
+
+    Try common runtimes in order so an image does not have to carry curl specifically.
+    This is deliberately an actual request rather than trusting Podman's network mode.
+    """
+    command = (
+        "if command -v curl >/dev/null 2>&1; then "
+        f"curl -fsS --connect-timeout 5 --max-time 10 {_EGRESS_PROBE_URL} >/dev/null; "
+        "elif command -v wget >/dev/null 2>&1; then "
+        f"wget -q -T 10 -O /dev/null {_EGRESS_PROBE_URL}; "
+        "elif command -v python3 >/dev/null 2>&1; then "
+        f"python3 -c \"import urllib.request; urllib.request.urlopen('{_EGRESS_PROBE_URL}', timeout=10).read(1)\"; "
+        "elif command -v node >/dev/null 2>&1; then "
+        f"node -e \"fetch('{_EGRESS_PROBE_URL}', {{signal: AbortSignal.timeout(10000)}})"
+        ".then(r => process.exit(r.ok ? 0 : 2)).catch(() => process.exit(3))\"; "
+        "else echo '缺少 curl、wget、python3 或 node，无法验证 HTTPS 出网' >&2; exit 127; fi"
+    )
+    return await exec(container_id, ["sh", "-c", command], timeout=15)
 
 
 async def _podman(*args: str, stdin: str | None = None, timeout: float = 30) -> tuple[int, str, str]:  # noqa: ASYNC109 — 子进程超时透传，与 security/sandbox.py 同款
@@ -108,12 +134,26 @@ async def probe_agent_runtime(
         return RuntimeReadiness(False, "容器未运行或 daemon 不可达")
     if expected_network_policy == "engagement-scope":
         return RuntimeReadiness(False, "engagement-scope 仅允许使用受控 engagement 沙箱")
+    live_network = ""
+    network_access = "not_checked"
     if expected_network_policy in {"none", "internet"}:
         live_network = await network_mode(container_id)
         if expected_network_policy == "none" and live_network != "none":
-            return RuntimeReadiness(False, "Profile 声明禁网，但容器实际网络模式不是 none")
+            return RuntimeReadiness(
+                False,
+                "Profile 声明禁网，但容器实际网络模式不是 none",
+                network_mode=live_network,
+                network_access="unavailable",
+            )
         if expected_network_policy == "internet" and live_network in {"", "none"}:
-            return RuntimeReadiness(False, "Profile 声明联网，但容器实际没有可用网络")
+            return RuntimeReadiness(
+                False,
+                "Profile 声明联网，但容器实际没有可用网络",
+                network_mode=live_network,
+                network_access="unavailable",
+            )
+        if expected_network_policy == "none":
+            network_access = "disabled"
 
     checks = ["command -v sh", "command -v cat", "command -v tee", "command -v grep", "command -v find"]
     if working_dir:
@@ -124,8 +164,31 @@ async def probe_agent_runtime(
     res = await exec(container_id, ["sh", "-c", " && ".join(checks)], timeout=20)
     if res.exit_code != 0:
         detail = (res.stderr or res.stdout or f"exit {res.exit_code}").strip()[:200]
-        return RuntimeReadiness(False, f"Agent runtime 探针失败：{detail}")
-    return RuntimeReadiness(True, "ready")
+        return RuntimeReadiness(
+            False,
+            f"Agent runtime 探针失败：{detail}",
+            network_mode=live_network,
+            network_access=network_access,
+        )
+
+    if expected_network_policy == "internet":
+        egress = await probe_network_egress(container_id)
+        if egress.exit_code != 0:
+            detail = (egress.stderr or egress.stdout or f"exit {egress.exit_code}").strip()[:200]
+            return RuntimeReadiness(
+                False,
+                f"容器 HTTPS 出网探针失败：{detail}",
+                network_mode=live_network,
+                network_access="unavailable",
+            )
+        network_access = "available"
+
+    return RuntimeReadiness(
+        True,
+        "ready",
+        network_mode=live_network,
+        network_access=network_access,
+    )
 
 
 async def list_containers() -> list[ContainerSummary]:
@@ -183,7 +246,15 @@ async def create_container(
 
 
 async def start(container_id: str) -> None:
-    rc, _o, err = await _podman("start", container_id)
+    rc, _o, err = await _podman("start", container_id, timeout=_START_TIMEOUT)
+    # 远端 Podman API 可能已接受启动、但 CLI 等待响应超时。以 daemon live state
+    # 复核后再决定失败，避免实体已运行而数据库/GUI仍显示未启动。
+    if rc == 124 and await is_running(container_id):
+        log.warning(
+            "podman.start.response_timeout_but_running",
+            container_id=container_id[:16],
+        )
+        return
     if rc != 0:
         raise RuntimeError(f"podman start 失败：{err[:300]}")
 

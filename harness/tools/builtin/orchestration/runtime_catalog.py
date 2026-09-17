@@ -18,6 +18,7 @@ class RuntimeCatalogTool(Tool):
         "列出可供子 Agent 自动选择的容器能力标签和策略。"
         "当任务需要专用运行环境且不确定 capability 标签时，先查询本工具，"
         "再把所需标签填入 Agent.runtime_requirements；不要根据镜像名猜测。"
+        "已接入但异常退出的长期容器会在选中时自动启动，任务结束后继续保活。"
     )
     input_schema: dict[str, Any] = {
         "type": "object",

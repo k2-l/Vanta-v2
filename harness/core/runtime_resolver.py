@@ -213,6 +213,7 @@ async def runtime_catalog(agent_name: str = "") -> list[dict[str, Any]]:
                 "workspace": profile.workspace_mode,
                 "health": profile.health_status,
                 "agents": sorted(allowlist),
+                "lifecycle": "persistent-auto-start",
             }
         )
     return sorted(result, key=lambda item: item["name"])
@@ -226,6 +227,51 @@ async def _set_health(container_record_id: str, status: str) -> None:
             .values(health_status=status, updated_at=datetime.now(UTC))
         )
         await db.commit()
+
+
+async def _set_record_status(container_record_id: str, status: str) -> None:
+    """Keep the store fallback consistent with resolver-driven lifecycle changes."""
+    async with session_factory()() as db:
+        await db.execute(
+            update(ContainerRecord)
+            .where(ContainerRecord.id == container_record_id)
+            .values(status=status, updated_at=datetime.now(UTC))
+        )
+        await db.commit()
+
+
+async def _ensure_running(candidate: RuntimeCandidate) -> tuple[bool, str]:
+    """Recover an opted-in long-running runtime after an unexpected exit.
+
+    An explicit management API stop disables ``agent_ready`` first, so only profiles
+    that remain opted in reach this path. The container stays running after lease
+    release, avoiding a cold start for every Agent task.
+    """
+    if await podman.is_running(candidate.podman_id):
+        return True, ""
+
+    await _set_health(candidate.record_id, "starting")
+    log.info(
+        "runtime.auto_start",
+        container_id=candidate.record_id,
+        container_name=candidate.name,
+    )
+    try:
+        await podman.start(candidate.podman_id)
+    except Exception as exc:  # noqa: BLE001 -- a concurrent resolver may have started it
+        if not await podman.is_running(candidate.podman_id):
+            return False, f"自动启动失败：{exc}"
+
+    if not await podman.is_running(candidate.podman_id):
+        return False, "自动启动后容器未保持运行，请检查镜像 CMD 或长期运行 command"
+
+    await _set_record_status(candidate.record_id, "running")
+    log.info(
+        "runtime.auto_started",
+        container_id=candidate.record_id,
+        container_name=candidate.name,
+    )
+    return True, ""
 
 
 async def _try_acquire(
@@ -289,6 +335,11 @@ async def resolve_runtime(
     probe_failures: list[str] = []
     saturated = False
     for candidate in candidates:
+        running, start_error = await _ensure_running(candidate)
+        if not running:
+            probe_failures.append(f"{candidate.name}: {start_error}")
+            await _set_health(candidate.record_id, "unavailable")
+            continue
         readiness = await podman.probe_agent_runtime(
             candidate.podman_id,
             working_dir=candidate.default_workdir,

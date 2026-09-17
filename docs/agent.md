@@ -67,6 +67,10 @@ user-invocable: true
 - 只能派 **active（已启动）** 的 agent。
 - `runtime_requirements` 不属于 `AGENT.md` 文件协议；它是单次 invocation 的调度参数。
   省略时继承父执行环境，提供时必须匹配 Container Profile，失败不回退本机。
+- 已接入的长期容器异常退出时，Resolver 会在选中后自动启动；任务结束仅释放租约，容器继续
+  保活供后续任务复用。管理员显式停止会关闭 Profile 接入，不触发自动重启。
+- `network="internet"` 只匹配实际通过容器内 HTTPS 出网探针的 Profile；`network="none"`
+  要求底层 Podman 网络模式确实为 `none`。
 - 见 `harness/tools/builtin/orchestration/run_agent.py`。
 
 ## 子图与主图的区别

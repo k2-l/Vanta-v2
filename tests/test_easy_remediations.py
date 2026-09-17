@@ -124,6 +124,44 @@ class EngagementPropagationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BoundaryProtectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_active_agent_lease_blocks_profile_mutation(self) -> None:
+        class FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def scalar(self, _statement):
+                return SimpleNamespace(container_record_id="record-1")
+
+        with (
+            patch.object(
+                container_routes,
+                "session_factory",
+                return_value=lambda: FakeSession(),
+            ),
+            patch.object(
+                container_routes,
+                "get_or_404",
+                new=AsyncMock(return_value=SimpleNamespace(container_id="podman-1")),
+            ),
+            patch.object(
+                container_routes,
+                "_active_lease_count",
+                new=AsyncMock(return_value=1),
+            ),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await container_routes.put_container_profile(
+                    "record-1",
+                    container_routes.ContainerProfileRequest(),
+                    {},
+                )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn("Agent invocation", raised.exception.detail)
+
     async def test_podman_name_collision_never_removes_existing_container(self) -> None:
         with patch(
             "harness.infra.podman._podman",
