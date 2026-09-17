@@ -24,10 +24,17 @@ import {
   type CapabilityKind,
 } from "@/features/capabilities/model";
 import type { ContainerWire } from "@/contracts/containers";
+import type { AgentWire } from "@/contracts/agents";
+import type { SkillWire } from "@/contracts/skills";
+import type { McpServerWire } from "@/contracts/mcp";
 import {
   CreateContainerDialog,
   ManageContainerDialog,
 } from "@/features/containers/ContainerRuntimeDialogs";
+import { AgentDialog } from "@/features/agents/AgentDialog";
+import { SkillDialog } from "@/features/skills/SkillDialog";
+import { useReindexSkills } from "@/features/skills/useSkillManagement";
+import { McpServerDialog } from "@/features/mcp/McpServerDialog";
 
 const KINDS = Object.keys(CAPABILITY_KIND) as CapabilityKind[];
 
@@ -37,9 +44,16 @@ export function CapabilitiesPage() {
   const connected = useConnection((s) => Boolean(s.activeConnectionId && s.auth.authenticated));
   const offline = useConnection((s) => s.status === "offline");
   const [containerDialog, setContainerDialog] = useState<"create" | ContainerWire | null>(null);
+  const [agentDialog, setAgentDialog] = useState<"create" | AgentWire | null>(null);
+  const [skillDialog, setSkillDialog] = useState<"create" | SkillWire | null>(null);
+  const [mcpDialog, setMcpDialog] = useState<"create" | McpServerWire | null>(null);
+  const reindexSkills = useReindexSkills();
 
   const query = useCapabilities();
   const all = query.data?.items ?? [];
+  const agents = query.data?.agents ?? [];
+  const skills = query.data?.skills ?? [];
+  const mcpServers = query.data?.mcpServers ?? [];
   const containers = query.data?.containers ?? [];
   const activeContainer = containerDialog && containerDialog !== "create"
     ? containers.find((item) => item.id === containerDialog.id) ?? containerDialog
@@ -97,6 +111,29 @@ export function CapabilitiesPage() {
               创建容器
             </Button>
           )}
+          {connected && kindFilter === "agent" && (
+            <Button size="xs" onClick={() => setAgentDialog("create")}>
+              <Plus size={13} />
+              创建 Agent
+            </Button>
+          )}
+          {connected && kindFilter === "skill" && (
+            <>
+              <Button size="xs" variant="secondary" disabled={reindexSkills.isPending} onClick={() => reindexSkills.mutate()}>
+                {reindexSkills.isPending ? "重建索引中…" : "重建索引"}
+              </Button>
+              <Button size="xs" onClick={() => setSkillDialog("create")}>
+                <Plus size={13} />
+                创建 Skill
+              </Button>
+            </>
+          )}
+          {connected && kindFilter === "mcp" && (
+            <Button size="xs" onClick={() => setMcpDialog("create")}>
+              <Plus size={13} />
+              创建 MCP
+            </Button>
+          )}
           <span className="text-[11px]" style={{ color: "var(--fg-subtle)" }}>
             {connected && query.isSuccess ? `共 ${all.length} 项` : null}
           </span>
@@ -118,7 +155,7 @@ export function CapabilitiesPage() {
       return (
         <ErrorState
           title="能力目录加载失败"
-          hint="无法从后端读取 Agent、技能、MCP、知识库或执行环境目录。"
+          hint="无法从后端读取 Agent、Skill、MCP、知识库或执行环境目录。"
           action={
             <Button variant="secondary" onClick={() => query.refetch()}>
               重试
@@ -128,7 +165,7 @@ export function CapabilitiesPage() {
       );
     }
     if (all.length === 0) {
-      return <EmptyState icon={Layers} title="后端未声明任何能力" hint="当前连接的后端没有已注册的 Agent、技能、MCP、知识库或执行环境。" />;
+      return <EmptyState icon={Layers} title="后端未声明任何能力" hint="当前连接的后端没有已注册的 Agent、Skill、MCP、知识库或执行环境。" />;
     }
     if (items.length === 0) {
       return <EmptyState icon={Layers} title="该分类下没有已声明的能力" hint="切换左侧分类查看其他来源。" />;
@@ -161,7 +198,22 @@ export function CapabilitiesPage() {
                     cap={cap}
                     lastSync={lastSync}
                     onManage={
-                      cap.kind === "runtime"
+                      cap.kind === "agent"
+                        ? () => {
+                            const agent = agents.find((item) => `agent:${item.id}` === cap.id);
+                            if (agent) setAgentDialog(agent);
+                          }
+                        : cap.kind === "skill"
+                        ? () => {
+                            const skill = skills.find((item) => `skill:${item.id}` === cap.id);
+                            if (skill) setSkillDialog(skill);
+                          }
+                        : cap.kind === "mcp"
+                        ? () => {
+                            const server = mcpServers.find((item) => `mcp:${item.name}` === cap.id);
+                            if (server) setMcpDialog(server);
+                          }
+                        : cap.kind === "runtime"
                         ? () => {
                             const container = containers.find((item) => `runtime:${item.id}` === cap.id);
                             if (container) setContainerDialog(container);
@@ -192,6 +244,18 @@ export function CapabilitiesPage() {
       )}
       {activeContainer && (
         <ManageContainerDialog container={activeContainer} onClose={() => setContainerDialog(null)} />
+      )}
+      {agentDialog === "create" && <AgentDialog onClose={() => setAgentDialog(null)} />}
+      {agentDialog && agentDialog !== "create" && (
+        <AgentDialog agent={agentDialog} onClose={() => setAgentDialog(null)} />
+      )}
+      {skillDialog === "create" && <SkillDialog onClose={() => setSkillDialog(null)} />}
+      {skillDialog && skillDialog !== "create" && (
+        <SkillDialog skill={skillDialog} onClose={() => setSkillDialog(null)} />
+      )}
+      {mcpDialog === "create" && <McpServerDialog onClose={() => setMcpDialog(null)} />}
+      {mcpDialog && mcpDialog !== "create" && (
+        <McpServerDialog server={mcpDialog} onClose={() => setMcpDialog(null)} />
       )}
     </>
   );

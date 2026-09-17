@@ -34,6 +34,7 @@ from harness.tools.source import SourceHealth, ToolSource, coordinator
 
 _PROTOCOL_VERSION = "2024-11-05"
 _REQUEST_TIMEOUT = 30.0
+_INITIALIZE_TIMEOUT = 120.0  # npx/uvx 首次联网下载依赖时冷启动可能明显超过普通调用
 _RECONNECT_COOLDOWN = 5.0  # 按需重连的冷却间隔：持续宕机时避免每次调用都 spawn 子进程
 
 
@@ -64,11 +65,15 @@ class MCPClient:
             env=full_env,
         )
         self._stderr_task = asyncio.create_task(self._drain_stderr())
-        await self._request("initialize", {
-            "protocolVersion": _PROTOCOL_VERSION,
-            "capabilities": {},
-            "clientInfo": {"name": "vanta-harness", "version": "0.1.0"},
-        })
+        await self._request(
+            "initialize",
+            {
+                "protocolVersion": _PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "vanta-harness", "version": "0.1.0"},
+            },
+            response_timeout=_INITIALIZE_TIMEOUT,
+        )
         await self._notify("notifications/initialized")
 
     async def _drain_stderr(self) -> None:
@@ -124,7 +129,13 @@ class MCPClient:
             await self.start()
             log.info("mcp.reconnected", server=self.name)
 
-    async def _request(self, method: str, params: dict) -> dict:
+    async def _request(
+        self,
+        method: str,
+        params: dict,
+        *,
+        response_timeout: float = _REQUEST_TIMEOUT,
+    ) -> dict:
         if self._proc is None or self._proc.stdin is None or self._proc.stdout is None:
             raise RuntimeError(f"MCP server '{self.name}' 未启动")
         async with self._lock:
@@ -135,9 +146,11 @@ class MCPClient:
             await self._proc.stdin.drain()
             while True:
                 try:
-                    line = await asyncio.wait_for(self._proc.stdout.readline(), _REQUEST_TIMEOUT)
+                    line = await asyncio.wait_for(self._proc.stdout.readline(), response_timeout)
                 except TimeoutError as exc:
-                    raise RuntimeError(f"MCP '{self.name}' {method} 超时（>{_REQUEST_TIMEOUT}s）") from exc
+                    raise RuntimeError(
+                        f"MCP '{self.name}' {method} 超时（>{response_timeout}s）"
+                    ) from exc
                 if not line:
                     raise RuntimeError(f"MCP '{self.name}' stdout 已关闭；stderr: {' | '.join(self._stderr_tail)}")
                 try:

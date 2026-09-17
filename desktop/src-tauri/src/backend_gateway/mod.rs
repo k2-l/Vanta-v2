@@ -164,6 +164,47 @@ pub enum ApiOperation {
         #[serde(rename = "containerId")]
         container_id: String,
     },
+    #[serde(rename = "agents.register")]
+    AgentsRegister { md: String },
+    #[serde(rename = "agents.update")]
+    AgentsUpdate {
+        #[serde(rename = "agentId")]
+        agent_id: String,
+        input: serde_json::Value,
+    },
+    #[serde(rename = "agents.delete")]
+    AgentsDelete {
+        #[serde(rename = "agentId")]
+        agent_id: String,
+    },
+    #[serde(rename = "skills.register")]
+    SkillsRegister { md: String },
+    #[serde(rename = "skills.update")]
+    SkillsUpdate {
+        #[serde(rename = "skillId")]
+        skill_id: String,
+        input: serde_json::Value,
+    },
+    #[serde(rename = "skills.delete")]
+    SkillsDelete {
+        #[serde(rename = "skillId")]
+        skill_id: String,
+    },
+    #[serde(rename = "skills.reindex")]
+    SkillsReindex,
+    #[serde(rename = "mcp.get")]
+    McpGet { name: String },
+    #[serde(rename = "mcp.create")]
+    McpCreate { input: serde_json::Value },
+    #[serde(rename = "mcp.update")]
+    McpUpdate {
+        name: String,
+        input: serde_json::Value,
+    },
+    #[serde(rename = "mcp.delete")]
+    McpDelete { name: String },
+    #[serde(rename = "mcp.test")]
+    McpTest { name: String },
 }
 
 #[derive(Clone, Copy)]
@@ -192,11 +233,20 @@ impl ApiOperation {
             Duration::from_secs(150)
         } else if matches!(
             self,
+            ApiOperation::McpCreate { .. }
+                | ApiOperation::McpUpdate { .. }
+                | ApiOperation::McpTest { .. }
+        ) {
+            // npx/uvx 类型 MCP 首次启动可能需要联网下载依赖，覆盖后端 120 秒初始化窗口。
+            Duration::from_secs(150)
+        } else if matches!(
+            self,
             ApiOperation::ContainersStart { .. }
                 | ApiOperation::ContainersStop { .. }
                 | ApiOperation::ContainersDelete { .. }
                 | ApiOperation::ContainersReadiness { .. }
                 | ApiOperation::ContainersProfilePut { .. }
+                | ApiOperation::McpDelete { .. }
         ) {
             Duration::from_secs(45)
         } else {
@@ -422,6 +472,81 @@ impl ApiOperation {
                 path: format!(
                     "/v1/containers/{}/readiness",
                     encode_query_component(container_id)
+                ),
+                body: None,
+                auth: true,
+            },
+            ApiOperation::AgentsRegister { md } => Resolved {
+                method: Method::Post,
+                path: "/v1/agents/register".into(),
+                body: Some(serde_json::json!({ "md": md })),
+                auth: true,
+            },
+            ApiOperation::AgentsUpdate { agent_id, input } => Resolved {
+                method: Method::Patch,
+                path: format!("/v1/agents/{}", encode_query_component(agent_id)),
+                body: Some(input.clone()),
+                auth: true,
+            },
+            ApiOperation::AgentsDelete { agent_id } => Resolved {
+                method: Method::Delete,
+                path: format!("/v1/agents/{}", encode_query_component(agent_id)),
+                body: None,
+                auth: true,
+            },
+            ApiOperation::SkillsRegister { md } => Resolved {
+                method: Method::Post,
+                path: "/v1/skills/register".into(),
+                body: Some(serde_json::json!({ "md": md })),
+                auth: true,
+            },
+            ApiOperation::SkillsUpdate { skill_id, input } => Resolved {
+                method: Method::Patch,
+                path: format!("/v1/skills/{}", encode_query_component(skill_id)),
+                body: Some(input.clone()),
+                auth: true,
+            },
+            ApiOperation::SkillsDelete { skill_id } => Resolved {
+                method: Method::Delete,
+                path: format!("/v1/skills/{}", encode_query_component(skill_id)),
+                body: None,
+                auth: true,
+            },
+            ApiOperation::SkillsReindex => Resolved {
+                method: Method::Post,
+                path: "/v1/skills/reindex".into(),
+                body: None,
+                auth: true,
+            },
+            ApiOperation::McpGet { name } => Resolved {
+                method: Method::Get,
+                path: format!("/v1/mcp/servers/{}", encode_query_component(name)),
+                body: None,
+                auth: true,
+            },
+            ApiOperation::McpCreate { input } => Resolved {
+                method: Method::Post,
+                path: "/v1/mcp/servers".into(),
+                body: Some(input.clone()),
+                auth: true,
+            },
+            ApiOperation::McpUpdate { name, input } => Resolved {
+                method: Method::Patch,
+                path: format!("/v1/mcp/servers/{}", encode_query_component(name)),
+                body: Some(input.clone()),
+                auth: true,
+            },
+            ApiOperation::McpDelete { name } => Resolved {
+                method: Method::Delete,
+                path: format!("/v1/mcp/servers/{}", encode_query_component(name)),
+                body: Some(serde_json::json!({ "confirm": true })),
+                auth: true,
+            },
+            ApiOperation::McpTest { name } => Resolved {
+                method: Method::Post,
+                path: format!(
+                    "/v1/mcp/servers/{}/test",
+                    encode_query_component(name)
                 ),
                 body: None,
                 auth: true,
@@ -921,6 +1046,87 @@ mod tests {
             })),
             Some("body.max_concurrency: Input should be greater than or equal to 1".into())
         );
+    }
+
+    #[test]
+    fn agent_management_operations_use_fixed_api_paths() {
+        let register: ApiOperation = serde_json::from_value(json!({
+            "op": "agents.register",
+            "md": "---\nname: worker\ndescription: test\n---\nbody"
+        }))
+        .unwrap();
+        let resolved = register.resolve();
+        assert!(matches!(resolved.method, super::Method::Post));
+        assert_eq!(resolved.path, "/v1/agents/register");
+
+        let update_body = json!({
+            "name": "worker",
+            "description": "updated",
+            "content": "body",
+            "tools": ["Read"],
+            "model": "",
+            "provider": null,
+            "enable_critic": false,
+            "disable_model_invocation": false,
+            "user_invocable": true
+        });
+        let update: ApiOperation = serde_json::from_value(json!({
+            "op": "agents.update",
+            "agentId": "worker/one",
+            "input": update_body.clone()
+        }))
+        .unwrap();
+        let resolved = update.resolve();
+        assert!(matches!(resolved.method, super::Method::Patch));
+        assert_eq!(resolved.path, "/v1/agents/worker%2Fone");
+        assert_eq!(resolved.body, Some(update_body));
+    }
+
+    #[test]
+    fn mcp_management_operations_use_fixed_paths_and_confirmation() {
+        let create_body = json!({
+            "name": "filesystem",
+            "command": "npx",
+            "args": ["-y", "server"],
+            "env": {},
+            "enabled": true,
+            "confirm": true
+        });
+        let create: ApiOperation = serde_json::from_value(json!({
+            "op": "mcp.create",
+            "input": create_body.clone()
+        }))
+        .unwrap();
+        let resolved = create.resolve();
+        assert!(matches!(resolved.method, super::Method::Post));
+        assert_eq!(resolved.path, "/v1/mcp/servers");
+        assert_eq!(resolved.body, Some(create_body));
+
+        let get: ApiOperation = serde_json::from_value(json!({
+            "op": "mcp.get",
+            "name": "server/one"
+        }))
+        .unwrap();
+        assert_eq!(get.resolve().path, "/v1/mcp/servers/server%2Fone");
+
+        let delete: ApiOperation = serde_json::from_value(json!({
+            "op": "mcp.delete",
+            "name": "server/one"
+        }))
+        .unwrap();
+        let resolved = delete.resolve();
+        assert!(matches!(resolved.method, super::Method::Delete));
+        assert_eq!(resolved.path, "/v1/mcp/servers/server%2Fone");
+        assert_eq!(resolved.body, Some(json!({ "confirm": true })));
+
+        let test: ApiOperation = serde_json::from_value(json!({
+            "op": "mcp.test",
+            "name": "server/one"
+        }))
+        .unwrap();
+        let resolved = test.resolve();
+        assert!(matches!(resolved.method, super::Method::Post));
+        assert_eq!(resolved.path, "/v1/mcp/servers/server%2Fone/test");
     }
 
     #[test]

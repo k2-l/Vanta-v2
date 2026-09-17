@@ -84,6 +84,11 @@ class DesktopBackendContractTests(unittest.TestCase):
             self.assertIn(path, paths)
             self.assertIn(method, paths[path])
         self.assertIn("delete", paths["/sessions/{session_id}"])
+        self.assertIn("post", paths["/v1/mcp/servers"])
+        self.assertIn("get", paths["/v1/mcp/servers/{name}"])
+        self.assertIn("patch", paths["/v1/mcp/servers/{name}"])
+        self.assertIn("delete", paths["/v1/mcp/servers/{name}"])
+        self.assertIn("post", paths["/v1/mcp/servers/{name}/test"])
 
     def test_session_title_is_trimmed_and_blank_is_rejected(self) -> None:
         self.assertEqual(SessionUpdate(title="  新标题  ").title, "新标题")

@@ -5,7 +5,7 @@
 mcp_servers 列表作为一个键整体 save（不直接写 data/config.toml，不进 routes/config.py
 的 EDITABLE 白名单 —— 那条路径是"单字段 PATCH"，这里是"列表级整体替换"，语义不同）。
 
-写门槛（新增/删除）：本期不复用 harness/infra/approvals.py 的 HITL 审批门——那套机制
+写门槛（新增/更新/删除）：本期不复用 harness/infra/approvals.py 的 HITL 审批门——那套机制
 是为 agent 工具调用流设计的同步阻塞原语，强绑定 session_id + 一个活跃的 WS 连接来转发
 approval_required 事件 + 等待前端 resolve，REST 管理端点没有这个会话上下文，硬接会很别扭。
 改用更轻量的显式确认：请求体须带 `confirm: true`，否则 422；前端二次确认弹窗展示将执行
@@ -47,6 +47,16 @@ class MCPServerSpec(BaseModel):
     args: list[str] = []
     env: dict[str, str] = {}
     enabled: bool = True
+    confirm: bool = Field(default=False, description="二次确认标志，必须显式为 true 才会执行")
+
+
+class MCPServerPatch(BaseModel):
+    """更新 MCP server；env=None 表示保留现有密钥，{} 表示显式清空。"""
+
+    command: str | None = None
+    args: list[str] | None = None
+    env: dict[str, str] | None = None
+    enabled: bool | None = None
     confirm: bool = Field(default=False, description="二次确认标志，必须显式为 true 才会执行")
 
 
@@ -177,6 +187,43 @@ async def create_server(
     if req.enabled:
         await mount_mcp_server(spec)
     return _to_view(spec, with_tools=True)
+
+
+@router.patch("/servers/{name}")
+async def update_server(
+    name: str,
+    req: MCPServerPatch,
+    _: Annotated[dict, Depends(require_auth)],
+) -> MCPServerView:
+    """更新持久配置并热重载；不回传或隐式清空已有 env 值。"""
+    _require_confirm(req.confirm)
+
+    specs = _persisted_specs()
+    index = next((i for i, spec in enumerate(specs) if spec.get("name") == name), None)
+    if index is None:
+        raise HTTPException(404, f"MCP server 不存在：{name}")
+
+    current = specs[index]
+    command = req.command.strip() if req.command is not None else str(current.get("command", ""))
+    if not command:
+        raise HTTPException(400, "command 不能为空")
+    updated = {
+        "name": name,
+        "command": command,
+        "args": req.args if req.args is not None else list(current.get("args") or []),
+        "env": req.env if req.env is not None else dict(current.get("env") or {}),
+        "enabled": req.enabled if req.enabled is not None else bool(current.get("enabled", True)),
+    }
+
+    # 先持久化权威配置，再切换运行态；挂载失败会由 coordinator 暴露为 error 状态，
+    # 配置不会悄悄回滚成旧 command。
+    specs[index] = updated
+    _save_servers(specs)
+    await unmount_mcp_server(name, drain=True)
+    if updated["enabled"]:
+        await mount_mcp_server(updated)
+    log.info("mcp.server_updated", server=name, enabled=updated["enabled"])
+    return _to_view(updated, with_tools=True)
 
 
 class DeleteConfirm(BaseModel):

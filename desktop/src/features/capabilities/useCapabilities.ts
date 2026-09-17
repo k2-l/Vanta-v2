@@ -11,22 +11,25 @@ import { ipc } from "@/ipc/client";
 import { useConnection } from "@/stores/connection";
 import type { ApiOperation } from "@/contracts/ipc";
 import type { ContainerWire } from "@/contracts/containers";
+import type { AgentWire } from "@/contracts/agents";
+import type { SkillWire } from "@/contracts/skills";
+import type { McpServerWire } from "@/contracts/mcp";
 import {
   agentToItem,
   containerToItem,
   knowledgeToItem,
   mcpToItem,
   skillToItem,
-  type AgentWire,
   type CapabilityItem,
   type CapabilityKind,
   type KnowledgeWire,
-  type McpServerWire,
-  type SkillWire,
 } from "./model";
 
 type CatalogResult = {
   items: CapabilityItem[];
+  agents: AgentWire[];
+  skills: SkillWire[];
+  mcpServers: McpServerWire[];
   containers: ContainerWire[];
   /** 拉取失败的来源类别（部分降级时非空）。 */
   failed: CapabilityKind[];
@@ -64,11 +67,17 @@ export function useCapabilities() {
         SOURCES.map((s) => ipc("api_request", { connectionId: connectionId!, operation: s.op })),
       );
       const items: CapabilityItem[] = [];
+      let agents: AgentWire[] = [];
+      let skills: SkillWire[] = [];
+      let mcpServers: McpServerWire[] = [];
       let containers: ContainerWire[] = [];
       const failed: CapabilityKind[] = [];
       settled.forEach((res, i) => {
         const src = SOURCES[i];
         if (res.status === "fulfilled" && Array.isArray(res.value)) {
+          if (src.kind === "agent") agents = res.value as AgentWire[];
+          if (src.kind === "skill") skills = res.value as SkillWire[];
+          if (src.kind === "mcp") mcpServers = res.value as McpServerWire[];
           if (src.kind === "runtime") containers = res.value as ContainerWire[];
           for (const row of res.value) items.push(src.map(row as never));
         } else {
@@ -80,7 +89,7 @@ export function useCapabilities() {
         const first = settled.find((r) => r.status === "rejected");
         throw first && first.status === "rejected" ? first.reason : new Error("能力目录加载失败");
       }
-      return { items, containers, failed };
+      return { items, agents, skills, mcpServers, containers, failed };
     },
   });
 }

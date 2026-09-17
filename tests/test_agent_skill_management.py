@@ -91,6 +91,43 @@ class RenameManagementTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(provider.get("old").content, "body")
                 self.assertIsNone(provider.get("new"))
 
+    async def test_agent_patch_updates_existing_invocation_controls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = self._provider(Path(tmp), AgentProvider, AgentFull)
+            with (
+                patch.object(agents, "_provider", return_value=provider),
+                patch.object(agents, "_invalidate_caches"),
+            ):
+                result = await agents.update_agent(
+                    "old",
+                    agents.AgentPatch(
+                        disable_model_invocation=False,
+                        user_invocable=True,
+                    ),
+                    {},
+                )
+
+            self.assertFalse(result["disable_model_invocation"])
+            self.assertTrue(result["user_invocable"])
+            updated = provider.get("old")
+            self.assertFalse(updated.meta.disable_model_invocation)
+            self.assertTrue(updated.meta.user_invocable)
+
+    async def test_agent_register_does_not_overwrite_existing_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = self._provider(Path(tmp), AgentProvider, AgentFull)
+            with patch.object(agents, "_provider", return_value=provider):
+                with self.assertRaises(HTTPException) as raised:
+                    await agents.register_agent(
+                        agents.RegisterAgentRequest(
+                            md="---\nname: old\ndescription: replacement\n---\nreplace"
+                        ),
+                        {},
+                    )
+
+            self.assertEqual(raised.exception.status_code, 409)
+            self.assertEqual(provider.get("old").content, "body")
+
 
 if __name__ == "__main__":
     unittest.main()

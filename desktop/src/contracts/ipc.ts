@@ -13,6 +13,9 @@ import type {
   HealthResult,
 } from "./connection";
 import type { ContainerProfileInput, CreateContainerInput } from "./containers";
+import type { AgentPatchInput } from "./agents";
+import type { SkillPatchInput } from "./skills";
+import type { McpServerCreateInput, McpServerPatchInput } from "./mcp";
 
 /** 命令名 allowlist——与 Rust `#[tauri::command]` 一一对应，也是 TS 侧唯一入口。 */
 export const IPC = {
@@ -71,7 +74,19 @@ export type ApiOperation =
   | { op: "containers.profile.get"; containerId: string }
   | { op: "containers.profile.put"; containerId: string; input: ContainerProfileInput }
   | { op: "containers.profile.delete"; containerId: string }
-  | { op: "containers.readiness"; containerId: string };
+  | { op: "containers.readiness"; containerId: string }
+  | { op: "agents.register"; md: string }
+  | { op: "agents.update"; agentId: string; input: AgentPatchInput }
+  | { op: "agents.delete"; agentId: string }
+  | { op: "skills.register"; md: string }
+  | { op: "skills.update"; skillId: string; input: SkillPatchInput }
+  | { op: "skills.delete"; skillId: string }
+  | { op: "skills.reindex" }
+  | { op: "mcp.get"; name: string }
+  | { op: "mcp.create"; input: McpServerCreateInput }
+  | { op: "mcp.update"; name: string; input: McpServerPatchInput }
+  | { op: "mcp.delete"; name: string }
+  | { op: "mcp.test"; name: string };
 
 /** 流句柄——chat_start / run_subscribe 返回，用于 stream_stop。 */
 export type StreamHandle = {

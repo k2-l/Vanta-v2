@@ -24,8 +24,10 @@ args    = ["-y", "@modelcontextprotocol/server-filesystem", "/data"]
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/v1/mcp/servers` | 列出（持久配置骨架 + 运行时状态合并视图） |
+| `GET` | `/v1/mcp/servers/{name}` | 查看单个 Server 及已注册工具明细（env 只返回键名） |
 | `POST` | `/v1/mcp/servers` | 新增 + 热挂载（请求体须带 `confirm: true`） |
-| `DELETE` | `/v1/mcp/servers/{name}` | 热卸载（drain 延迟关子进程）+ 从配置移除 |
+| `PATCH` | `/v1/mcp/servers/{name}` | 更新配置并热重载（请求体须带 `confirm: true`；省略 `env` 时保留原值） |
+| `DELETE` | `/v1/mcp/servers/{name}` | 热卸载（drain 延迟关子进程）+ 从配置移除（请求体须带 `confirm: true`） |
 | `POST` | `/v1/mcp/servers/{name}/test` | 临时拉起验证连通性，用完即关，不入册 |
 
 env 脱敏：`GET` 只回 env 的 key 名，不回明文 value。

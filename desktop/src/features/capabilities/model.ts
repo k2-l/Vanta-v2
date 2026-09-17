@@ -13,12 +13,15 @@
 import { Boxes, BookOpen, Cpu, Plug, Wrench, type LucideIcon } from "lucide-react";
 import type { Tone } from "@/components/desktop/status";
 import type { ContainerWire } from "@/contracts/containers";
+import type { AgentWire } from "@/contracts/agents";
+import type { SkillWire } from "@/contracts/skills";
+import type { McpServerWire } from "@/contracts/mcp";
 
 export type CapabilityKind = "agent" | "skill" | "mcp" | "knowledge" | "runtime";
 
 export const CAPABILITY_KIND: Record<CapabilityKind, { label: string; icon: LucideIcon }> = {
   agent: { label: "Agent", icon: Boxes },
-  skill: { label: "技能", icon: Wrench },
+  skill: { label: "Skill", icon: Wrench },
   mcp: { label: "MCP", icon: Plug },
   knowledge: { label: "知识库", icon: BookOpen },
   runtime: { label: "执行环境", icon: Cpu },
@@ -48,39 +51,6 @@ export type CapabilityItem = {
 
 // ─── wire 形状（与后端逐字段对齐） ─────────────────────────────────────
 
-export type AgentWire = {
-  id: string;
-  name: string;
-  description?: string;
-  model?: string;
-  provider?: string | null;
-  tools?: string[];
-  skills?: string[];
-  enable_critic?: boolean;
-};
-
-export type SkillWire = {
-  id: string;
-  name: string;
-  description?: string;
-  model?: string;
-  allowed_tools?: string[];
-  triggers?: string[];
-  effort?: string;
-  context?: string;
-};
-
-export type McpServerWire = {
-  name: string;
-  command: string;
-  args?: string[];
-  enabled?: boolean;
-  env_keys?: string[];
-  status?: string; // connected | disconnected | error
-  error?: string | null;
-  tool_count?: number;
-};
-
 export type KnowledgeWire = {
   id: string;
   name: string;
@@ -95,29 +65,30 @@ export type KnowledgeWire = {
 /** Agent 来自后端目录扫描：已注册即后端可调度。 */
 export function agentToItem(a: AgentWire): CapabilityItem {
   const dep = [a.model, a.provider ?? undefined].filter(Boolean).join(" · ");
+  const invocation = a.disable_model_invocation ? "仅按名调用" : "模型可自动选择";
   return {
     id: `agent:${a.id}`,
     kind: "agent",
     name: a.name || a.id,
-    source: "后端 · Agent 目录",
+    source: "Agent 目录",
     availability: "available",
-    detail: a.description || "已注册的编排 Agent",
+    detail: `${invocation} · ${a.description || "已注册的编排 Agent"}`,
     dependency: dep || undefined,
     location: "后端",
   };
 }
 
-/** Skill 来自工作区目录扫描：已注册即可按需加载。 */
+/** Skill 来自后端目录扫描：已注册即可按需加载。 */
 export function skillToItem(s: SkillWire): CapabilityItem {
   return {
     id: `skill:${s.id}`,
     kind: "skill",
     name: s.name || s.id,
-    source: "工作区 · skills/",
+    source: "Skill 目录",
     availability: "available",
-    detail: s.description || "按需加载的技能",
-    dependency: s.effort ? `强度 ${s.effort}` : undefined,
-    location: s.context === "container" ? "容器" : "后端",
+    detail: s.description || "按需加载的 Skill",
+    dependency: s.model || (s.allowed_tools.length ? `${s.allowed_tools.length} 个工具` : undefined),
+    location: "后端",
   };
 }
 
@@ -143,7 +114,7 @@ export function mcpToItem(m: McpServerWire): CapabilityItem {
     id: `mcp:${m.name}`,
     kind: "mcp",
     name: m.name,
-    source: "MCP · stdio",
+    source: "MCP 目录",
     availability,
     detail,
     dependency: m.command || undefined,
@@ -158,7 +129,7 @@ export function knowledgeToItem(k: KnowledgeWire): CapabilityItem {
     id: `knowledge:${k.id}`,
     kind: "knowledge",
     name: k.title || k.name || k.id,
-    source: `向量库 · ${category}`,
+    source: `知识 目录`,
     availability: "available",
     detail: (k.tags && k.tags.length ? k.tags.join(" / ") : category),
     location: "后端",
@@ -187,7 +158,7 @@ export function containerToItem(c: ContainerWire): CapabilityItem {
     id: `runtime:${c.id}`,
     kind: "runtime",
     name: c.name || c.id,
-    source: "执行环境 · 容器",
+    source: "容器 目录",
     availability,
     detail,
     dependency: c.image || undefined,

@@ -22,7 +22,7 @@ from harness.contracts.models import (
     normalize_provider_name,
 )
 from harness.providers import get_provider
-from harness.routes._utils import resolve_rename, updated_entity_meta, validated_entity_name
+from harness.routes._utils import resolve_rename, validated_entity_name
 
 router = APIRouter(prefix="/v1", tags=["agents"])
 
@@ -96,6 +96,8 @@ class AgentPatch(BaseModel):
     model: str | None = None
     provider: ProviderName | None = None
     enable_critic: bool | None = None
+    disable_model_invocation: bool | None = None
+    user_invocable: bool | None = None
 
     @field_validator("provider", mode="before")
     @classmethod
@@ -142,7 +144,10 @@ async def register_agent(
         full = _agent_from_fm(fm, body)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
-    _provider().write(name, full)
+    provider = _provider()
+    if provider.has(name):
+        raise HTTPException(409, f"Agent 已存在：{name}")
+    provider.write(name, full)
     _invalidate_caches()
     return _agent_dict(full)
 
@@ -161,7 +166,24 @@ async def update_agent(
     new_id, rename = resolve_rename(p, agent_id, patch.name, "Agent")
 
     new_full = AgentFull(
-        meta=updated_entity_meta(cur, new_id, patch.description),
+        meta=EntityMeta(
+            name=new_id,
+            description=(
+                patch.description
+                if patch.description is not None
+                else cur.meta.description
+            ),
+            disable_model_invocation=(
+                patch.disable_model_invocation
+                if patch.disable_model_invocation is not None
+                else cur.meta.disable_model_invocation
+            ),
+            user_invocable=(
+                patch.user_invocable
+                if patch.user_invocable is not None
+                else cur.meta.user_invocable
+            ),
+        ),
         content=patch.content if patch.content is not None else cur.content,
         model=(patch.model or None) if patch.model is not None else cur.model,
         provider=patch.provider if "provider" in patch.model_fields_set else cur.provider,
