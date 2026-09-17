@@ -22,7 +22,7 @@ src/
                         ResourceList / RunTimeline / ApprovalCard / ArtifactPreview /
                         DesktopComposer / StatusDot·StatusBadge / states（空·错误·离线…）
   contracts/   协议契约：errors / connection / stream（流事件）/ events / ipc
-  ipc/         类型化 invoke（Tauri）+ chat / run 流封装 + 浏览器 mock（无 host 时）
+  ipc/         类型化 invoke（Tauri）+ chat / run 流封装（仅真实 Rust Core）
   stores/      Zustand：connection（全局连接状态）/ ui（主题·模块级布局状态）
   hooks/       useTheme（主题应用）/ useBreakpoint（窗口断点）/ useHotkeys（快捷键）
   features/    connection · chat（步骤卡）· runs（事件归一化 projection /
@@ -44,16 +44,6 @@ src-tauri/
 
 ## 运行
 
-### 前端（浏览器，mock IPC —— 无需 Rust）
-
-```bash
-cd desktop
-npm install
-npm run dev        # http://localhost:5180
-```
-
-无 Tauri host 时，IPC 走内存 mock（连接/凭据为假数据），可独立走查全部 UI。
-
 ### 桌面（需 Rust 工具链）
 
 Rust 未安装时先装：
@@ -66,6 +56,8 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 应用图标已生成。运行：
 
 ```bash
+cd desktop
+npm install
 npm run tauri:dev     # 开发
 npm run tauri:build:debug  # 生成含最新前端资源的 target/debug/vanta-desktop
 npm run tauri:build   # 打包
@@ -107,7 +99,7 @@ npm run tauri:build:mac-arm64        # ARM64 release 包，ad-hoc 签名
 - 输入器下方可主动压缩已有会话：先生成可编辑的结构化摘要和 Token 对比，确认后提交检查点；原始消息不删除
 - Rust Core 持有后端 URL、访问/刷新令牌；自动轮换短期令牌并通过 Tauri Channel 有序转发 SSE
 - 服务端可撤销登录会话；设置页展示两级到期时间，支持手动刷新和退出登录
-- 停止当前流、浏览器 mock 独立走查
+- 停止当前流；开发和验收均通过真实 Tauri 客户端走 Rust Core
 
 ## G1.5 新增（设计系统与桌面 Shell）
 
@@ -161,7 +153,7 @@ npm run tauri:build:mac-arm64        # ARM64 release 包，ad-hoc 签名
   **secret 类只显示元数据、不回明文且禁止导出**。
 - 安全导出：后端声明 `artifact_export=True`；Rust Core 重新读取权威产物，拒绝 secret，
   清洗文件名并以不可覆盖的唯一名称写入系统下载目录 `Vanta Exports`，WebView 不能传路径或正文。
-- 契约四层同步：Python schema/route、Rust gateway/command、TS contract/UI、浏览器 mock。
+- 契约三层同步：Python schema/route、Rust gateway/command、TS contract/UI。
 
 ## 联调前收口（模块生命周期与后端清理）
 

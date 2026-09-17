@@ -12,12 +12,12 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete, select
 
 from harness.app.auth import require_auth
 from harness.infra import podman
-from harness.infra.db import ContainerRecord, session_factory
+from harness.infra.db import ContainerProfile, ContainerRecord, session_factory
 from harness.infra.logging import log
 from harness.routes._utils import container_to_dict, get_or_404
 
@@ -27,8 +27,27 @@ router = APIRouter(prefix="/v1", tags=["containers"])
 class CreateContainerRequest(BaseModel):
     name: str
     image: str
-    ports: list[str] = []
-    env_vars: list[str] = []
+    ports: list[str] = Field(default_factory=list)
+    env_vars: list[str] = Field(default_factory=list)
+    command: list[str] | None = None
+    network_mode: str = "bridge"
+    working_dir: str = ""
+
+    @field_validator("network_mode")
+    @classmethod
+    def validate_network_mode(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"bridge", "none"}:
+            raise ValueError("network_mode 仅允许 bridge 或 none")
+        return normalized
+
+    @field_validator("working_dir")
+    @classmethod
+    def validate_working_dir(cls, value: str) -> str:
+        normalized = value.strip()
+        if normalized and not normalized.startswith("/"):
+            raise ValueError("working_dir 必须是容器内绝对路径")
+        return normalized
 
 
 class ExecContainerRequest(BaseModel):
@@ -37,6 +56,70 @@ class ExecContainerRequest(BaseModel):
     env: list[str] = []
     timeout_sec: int = 60
     stdin: str = ""
+
+
+class ContainerProfileRequest(BaseModel):
+    capabilities: list[str] = Field(default_factory=list)
+    purpose: str = "generic"
+    workspace_mode: str = "none"
+    network_policy: str = "none"
+    default_workdir: str = ""
+    agent_allowlist: list[str] = Field(default_factory=list)
+    max_concurrency: int = Field(default=1, ge=1, le=64)
+    agent_ready: bool = False
+
+    @field_validator("workspace_mode")
+    @classmethod
+    def validate_workspace_mode(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"none", "read-only", "read-write"}:
+            raise ValueError("workspace_mode 必须是 none、read-only 或 read-write")
+        return normalized
+
+    @field_validator("network_policy")
+    @classmethod
+    def validate_network_policy(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"none", "internet"}:
+            raise ValueError("network_policy 必须是 none 或 internet")
+        return normalized
+
+    @field_validator("default_workdir")
+    @classmethod
+    def validate_workdir(cls, value: str) -> str:
+        normalized = value.strip()
+        if normalized and not normalized.startswith("/"):
+            raise ValueError("default_workdir 必须是容器内绝对路径")
+        return normalized
+
+    @field_validator("capabilities", "agent_allowlist")
+    @classmethod
+    def normalize_lists(cls, value: list[str]) -> list[str]:
+        result: list[str] = []
+        for item in value:
+            normalized = item.strip().lower()
+            if not normalized:
+                raise ValueError("列表项不能为空")
+            if normalized not in result:
+                result.append(normalized)
+        return result
+
+
+def _profile_to_dict(profile: ContainerProfile) -> dict:
+    return {
+        "container_record_id": profile.container_record_id,
+        "capabilities": list(profile.capabilities or []),
+        "purpose": profile.purpose,
+        "workspace_mode": profile.workspace_mode,
+        "network_policy": profile.network_policy,
+        "default_workdir": profile.default_workdir,
+        "agent_allowlist": list(profile.agent_allowlist or []),
+        "max_concurrency": profile.max_concurrency,
+        "agent_ready": profile.agent_ready,
+        "health_status": profile.health_status,
+        "created_at": profile.created_at.isoformat() if profile.created_at else None,
+        "updated_at": profile.updated_at.isoformat() if profile.updated_at else None,
+    }
 
 
 @router.get("/containers")
@@ -73,6 +156,101 @@ async def get_container(cid: str, _: Annotated[dict, Depends(require_auth)]) -> 
         return container_to_dict(rec)
 
 
+@router.get("/containers/{cid}/profile")
+async def get_container_profile(
+    cid: str, _: Annotated[dict, Depends(require_auth)]
+) -> dict:
+    async with session_factory()() as db:
+        await get_or_404(db, ContainerRecord, cid, "容器不存在")
+        profile = await db.get(ContainerProfile, cid)
+        if profile is None:
+            raise HTTPException(404, "容器尚未配置 Agent runtime Profile")
+        return _profile_to_dict(profile)
+
+
+@router.put("/containers/{cid}/profile")
+async def put_container_profile(
+    cid: str,
+    req: ContainerProfileRequest,
+    _: Annotated[dict, Depends(require_auth)],
+) -> dict:
+    """Create/update the explicit opt-in profile used by automatic Agent selection."""
+    async with session_factory()() as db:
+        rec = await get_or_404(db, ContainerRecord, cid, "容器不存在")
+        if req.agent_ready:
+            readiness = await podman.probe_agent_runtime(
+                rec.container_id,
+                working_dir=req.default_workdir,
+                require_write=req.workspace_mode == "read-write",
+                expected_network_policy=req.network_policy,
+            )
+            if not readiness.ready:
+                log.warning(
+                    "container.profile.readiness_rejected",
+                    container_record_id=cid,
+                    network_policy=req.network_policy,
+                    workspace_mode=req.workspace_mode,
+                    reason=readiness.reason[:200],
+                )
+                raise HTTPException(409, readiness.reason)
+        profile = await db.get(ContainerProfile, cid)
+        if profile is None:
+            profile = ContainerProfile(container_record_id=cid)
+            db.add(profile)
+        profile.capabilities = req.capabilities
+        profile.purpose = req.purpose.strip() or "generic"
+        profile.workspace_mode = req.workspace_mode
+        profile.network_policy = req.network_policy
+        profile.default_workdir = req.default_workdir
+        profile.agent_allowlist = req.agent_allowlist
+        profile.max_concurrency = req.max_concurrency
+        profile.agent_ready = req.agent_ready
+        profile.health_status = "ready" if req.agent_ready else "disabled"
+        await db.commit()
+        await db.refresh(profile)
+        log.info(
+            "container.profile.saved",
+            container_record_id=cid,
+            agent_ready=profile.agent_ready,
+            capability_count=len(profile.capabilities or []),
+        )
+        return _profile_to_dict(profile)
+
+
+@router.delete("/containers/{cid}/profile", status_code=204)
+async def delete_container_profile(
+    cid: str, _: Annotated[dict, Depends(require_auth)]
+) -> None:
+    from harness.core.runtime_resolver import prepare_container_lifecycle
+
+    if not await prepare_container_lifecycle(cid):
+        raise HTTPException(409, "容器正被 Agent invocation 使用，不能删除 Profile")
+    async with session_factory()() as db:
+        await get_or_404(db, ContainerRecord, cid, "容器不存在")
+        result = await db.execute(
+            delete(ContainerProfile).where(ContainerProfile.container_record_id == cid)
+        )
+        if not result.rowcount:
+            raise HTTPException(404, "容器尚未配置 Agent runtime Profile")
+        await db.commit()
+
+
+@router.get("/containers/{cid}/readiness")
+async def container_readiness(
+    cid: str, _: Annotated[dict, Depends(require_auth)]
+) -> dict:
+    async with session_factory()() as db:
+        rec = await get_or_404(db, ContainerRecord, cid, "容器不存在")
+        profile = await db.get(ContainerProfile, cid)
+    readiness = await podman.probe_agent_runtime(
+        rec.container_id,
+        working_dir=profile.default_workdir if profile else "",
+        require_write=bool(profile and profile.workspace_mode == "read-write"),
+        expected_network_policy=profile.network_policy if profile else "",
+    )
+    return {"ready": readiness.ready, "reason": readiness.reason}
+
+
 @router.post("/containers", status_code=201)
 async def create_container(
     req: CreateContainerRequest,
@@ -85,7 +263,15 @@ async def create_container(
         raise HTTPException(409, f"容器名称已存在：{req.name}")
 
     try:
-        podman_id = await podman.create_container(req.name, req.image, req.ports, req.env_vars)
+        podman_id = await podman.create_container(
+            req.name,
+            req.image,
+            req.ports,
+            req.env_vars,
+            req.command,
+            network_mode=req.network_mode,
+            working_dir=req.working_dir,
+        )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, f"podman create: {exc}") from exc
 
@@ -120,6 +306,10 @@ async def start_container(cid: str, _: Annotated[dict, Depends(require_auth)]) -
 
 @router.patch("/containers/{cid}/stop")
 async def stop_container(cid: str, _: Annotated[dict, Depends(require_auth)]) -> dict:
+    from harness.core.runtime_resolver import prepare_container_lifecycle
+
+    if not await prepare_container_lifecycle(cid):
+        raise HTTPException(409, "容器正被 Agent invocation 使用，不能停止")
     async with session_factory()() as db:
         rec = await get_or_404(db, ContainerRecord, cid, "容器不存在")
         if rec.container_id:
@@ -134,6 +324,10 @@ async def stop_container(cid: str, _: Annotated[dict, Depends(require_auth)]) ->
 
 @router.delete("/containers/{cid}", status_code=204)
 async def delete_container(cid: str, _: Annotated[dict, Depends(require_auth)]) -> None:
+    from harness.core.runtime_resolver import prepare_container_lifecycle
+
+    if not await prepare_container_lifecycle(cid):
+        raise HTTPException(409, "容器正被 Agent invocation 使用，不能删除")
     async with session_factory()() as db:
         rec = await get_or_404(db, ContainerRecord, cid, "容器不存在")
         if rec.container_id:

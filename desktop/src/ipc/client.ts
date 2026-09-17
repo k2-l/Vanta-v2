@@ -1,20 +1,22 @@
 /**
  * 类型化 IPC 客户端——WebView 与 Rust Core 的唯一通道。
  *
- * - 生产（Tauri WebView）：走 `@tauri-apps/api` 的 invoke。
- * - 开发（普通浏览器 `npm run dev`，无 Tauri host）：走内置 mock，
- *   让 UI 可独立开发/验证，不依赖 Rust 编译产物。
- *
- * 无论哪条路径，错误都归一化为 ClientError（方案 §8.3）。
+ * 只允许在 Tauri WebView 中通过 `@tauri-apps/api` 调用真实 Rust Core。
+ * 普通浏览器不提供后端回退，避免联调时误把内存假数据当成服务端状态。
+ * 错误统一归一化为 ClientError（方案 §8.3）。
  */
 
 import { toClientError } from "@/contracts/errors";
 import type { IpcContract } from "@/contracts/ipc";
-import { mockInvoke } from "./mock";
 
 /** 是否运行在 Tauri WebView 内。 */
 export function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+/** 拒绝脱离 Tauri host 运行；桌面端不再提供浏览器 Mock。 */
+export function requireTauri(): void {
+  if (!isTauri()) throw new Error("Vanta GUI 必须在 Tauri 客户端中运行");
 }
 
 type Cmd = keyof IpcContract;
@@ -29,8 +31,8 @@ async function realInvoke<C extends Cmd>(cmd: C, args: IpcContract[C]["args"]): 
 
 export async function ipc<C extends Cmd>(cmd: C, args: IpcContract[C]["args"]): Promise<IpcContract[C]["result"]> {
   try {
-    if (isTauri()) return await realInvoke(cmd, args);
-    return await mockInvoke(cmd, args);
+    requireTauri();
+    return await realInvoke(cmd, args);
   } catch (err) {
     throw toClientError(err);
   }

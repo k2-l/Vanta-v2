@@ -138,54 +138,67 @@ export function RunsPage() {
     openModule("chat", { selectedId, detailOpen: true });
   };
 
-  const detail =
-    selectedId && projection ? (
-      <DetailPanel
-        title={<span className="flex items-center gap-2">运行详情 {isLive && <StatusDot tone="running" pulse size={7} />}</span>}
-        onClose={() => useUi.getState().setDetailOpen("runs", false)}
+  // 运行操作（回到来源会话 + 删除）——只依赖 selectedId，与详情投影是否加载成功无关。
+  // 因此失效/无法重建快照的记录也能删除（修复：这类记录此前只有“重新加载”、没有删除入口）。
+  const runActions = (
+    <>
+      <Button size="sm" variant="secondary" className="mt-1 w-full" onClick={backToChat}>
+        <MessageSquare size={14} />
+        回到来源会话
+      </Button>
+      <Button
+        size="sm"
+        variant={confirmingDelete ? "danger" : "dangerGhost"}
+        className="mt-1 w-full"
+        disabled={deleteRun.isPending}
+        title="删除该运行及其会话（含消息与运行遥测，不可撤销）"
+        onClick={() => {
+          if (confirmingDelete && selectedId) deleteRun.mutate(selectedId);
+          else setConfirmingDelete(true);
+        }}
+        onBlur={() => setConfirmingDelete(false)}
       >
-        {detailError && (
-          <div
-            className="mb-3 rounded-[var(--radius)] border px-2.5 py-2 text-[11px]"
-            style={{ borderColor: "var(--danger)", background: "var(--danger-tint)", color: "var(--fg)" }}
-          >
-            运行订阅已中断：{detailErrorMessage ?? "请重新加载快照"}
-          </div>
-        )}
-        <RunDetailBody projection={projection} eventReplay={eventReplay} runHistory={runHistory} />
-        <Button size="sm" variant="secondary" className="mt-1 w-full" onClick={backToChat}>
-          <MessageSquare size={14} />
-          回到来源会话
-        </Button>
-        <Button
-          size="sm"
-          variant={confirmingDelete ? "danger" : "dangerGhost"}
-          className="mt-1 w-full"
-          disabled={deleteRun.isPending}
-          title="删除该运行及其会话（含消息与运行遥测，不可撤销）"
-          onClick={() => {
-            if (confirmingDelete && selectedId) deleteRun.mutate(selectedId);
-            else setConfirmingDelete(true);
-          }}
-          onBlur={() => setConfirmingDelete(false)}
+        <Trash2 size={14} />
+        {deleteRun.isPending ? "删除中…" : confirmingDelete ? "确认删除（含会话与消息）" : "删除运行"}
+      </Button>
+    </>
+  );
+
+  // 只要选中了运行就渲染详情面板：投影成功→详情；加载中→骨架；失败→错误+重载；
+  // 都不满足（快照不可用的失效记录）→ 提示但仍保留删除入口。操作按钮在每种状态下都可用。
+  const detail = selectedId ? (
+    <DetailPanel
+      title={
+        <span className="flex items-center gap-2">
+          运行详情 {projection && isLive && <StatusDot tone="running" pulse size={7} />}
+        </span>
+      }
+      onClose={() => useUi.getState().setDetailOpen("runs", false)}
+    >
+      {detailError && projection && (
+        <div
+          className="mb-3 rounded-[var(--radius)] border px-2.5 py-2 text-[11px]"
+          style={{ borderColor: "var(--danger)", background: "var(--danger-tint)", color: "var(--fg)" }}
         >
-          <Trash2 size={14} />
-          {deleteRun.isPending ? "删除中…" : confirmingDelete ? "确认删除（含会话与消息）" : "删除运行"}
-        </Button>
-      </DetailPanel>
-    ) : selectedId && detailLoading ? (
-      <DetailPanel title="运行详情" onClose={() => useUi.getState().setDetailOpen("runs", false)}>
+          运行订阅已中断：{detailErrorMessage ?? "请重新加载快照"}
+        </div>
+      )}
+      {projection ? (
+        <RunDetailBody projection={projection} eventReplay={eventReplay} runHistory={runHistory} />
+      ) : detailLoading ? (
         <LoadingState title="加载运行快照…" />
-      </DetailPanel>
-    ) : selectedId && detailError ? (
-      <DetailPanel title="运行详情" onClose={() => useUi.getState().setDetailOpen("runs", false)}>
+      ) : detailError ? (
         <ErrorState
           title="运行详情加载失败"
           hint={detailErrorMessage}
           action={<Button size="xs" variant="secondary" onClick={() => void refetchDetail()}>重新加载</Button>}
         />
-      </DetailPanel>
-    ) : undefined;
+      ) : (
+        <EmptyState icon={Activity} title="运行详情不可用" hint="该运行没有可用的阶段快照，仍可在下方删除此记录。" />
+      )}
+      {runActions}
+    </DetailPanel>
+  ) : undefined;
 
   return (
     <ModuleLayout module="runs" rail={rail} detail={detail}>

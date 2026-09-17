@@ -1,8 +1,7 @@
 import type { StreamPacket } from "@/contracts/stream";
 import type { StreamHandle } from "@/contracts/ipc";
 import { toClientError } from "@/contracts/errors";
-import { isTauri } from "./client";
-import { mockRunSubscribe } from "./mock";
+import { requireTauri } from "./client";
 
 export type RunSubscribeArgs = {
   connectionId: string;
@@ -19,7 +18,7 @@ export async function runSubscribe(
   onEvent: (packet: StreamPacket) => void,
 ): Promise<StreamHandle> {
   try {
-    if (!isTauri()) return await mockRunSubscribe(args, onEvent);
+    requireTauri();
     const { Channel, invoke } = await import("@tauri-apps/api/core");
     const channel = new Channel<StreamPacket>();
     channel.onmessage = onEvent;

@@ -5,3 +5,4 @@ export * from "./stream";
 export * from "./resources";
 export * from "./events";
 export * from "./ipc";
+export * from "./containers";

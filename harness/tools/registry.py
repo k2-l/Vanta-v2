@@ -153,6 +153,7 @@ def load_builtin_tools() -> None:
     from harness.tools.builtin.orchestration import (  # noqa: F401
         load_skill,
         run_agent,
+        runtime_catalog,
         tool_search,
     )
     from harness.tools.builtin.security import board as sec_board  # noqa: F401

@@ -146,6 +146,54 @@ class ContainerRecord(Base):
     )
 
 
+class ContainerProfile(Base):
+    """Agent runtime selection metadata kept separate from the legacy container table.
+
+    The separate table keeps the existing container CRUD/storage contract stable.  A
+    container is never eligible for automatic Agent selection until it has an enabled
+    profile and passes the live readiness probe.
+    """
+
+    __tablename__ = "container_profiles"
+
+    container_record_id: Mapped[str] = mapped_column(
+        ForeignKey("containers.id", ondelete="CASCADE"), primary_key=True
+    )
+    capabilities: Mapped[list] = mapped_column(JSON, default=list)
+    purpose: Mapped[str] = mapped_column(String(100), default="generic")
+    workspace_mode: Mapped[str] = mapped_column(String(20), default="none")
+    network_policy: Mapped[str] = mapped_column(String(24), default="none")
+    default_workdir: Mapped[str] = mapped_column(Text, default="")
+    agent_allowlist: Mapped[list] = mapped_column(JSON, default=list)
+    max_concurrency: Mapped[int] = mapped_column(Integer, default=1)
+    agent_ready: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    health_status: Mapped[str] = mapped_column(String(20), default="unknown", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+
+class ContainerLease(Base):
+    """One invocation's temporary claim on an automatically selected container."""
+
+    __tablename__ = "container_leases"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    container_record_id: Mapped[str] = mapped_column(
+        ForeignKey("containers.id", ondelete="CASCADE"), index=True
+    )
+    session_id: Mapped[str] = mapped_column(String(32), default="", index=True)
+    invocation_id: Mapped[str] = mapped_column(String(100), index=True)
+    agent_name: Mapped[str] = mapped_column(String(200), default="", index=True)
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    released_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
+
+
 class ScriptRecord(Base):
     """L3 脚本 — 可被 skill/agent 依赖的自动化脚本。"""
     __tablename__ = "scripts"

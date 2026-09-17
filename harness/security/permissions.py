@@ -61,8 +61,8 @@ _RISKY_BASH = [
     "mkfs", "shutdown", "reboot", "systemctl", "service", "mount", "umount",
 ]
 
-# 主动扫描器名单：host 上默认 deny（fail-safe，不在 harness 进程内裸扫全网），须进
-# per-engagement egress 锁定沙箱跑；容器内不受此限（env=="container" 放行 + nft 兜底 scope）。
+# 主动扫描器名单：任何执行环境都要求有效 engagement；Bash 再把命令路由到
+# per-engagement egress 锁定沙箱，不能把普通 Agent runtime 当成 scope 沙箱。
 _HOST_DENIED_TOOLS: frozenset[str] = frozenset({
     "nmap", "masscan", "zmap", "nuclei", "sqlmap", "gobuster", "ffuf", "dirb",
     "nikto", "wpscan", "hydra", "medusa", "whatweb", "wfuzz", "feroxbuster",
@@ -148,17 +148,19 @@ def _eval_subject(
         if _match(tool_name, subject, rules.allow) or tool_name in READ_ONLY_TOOLS:
             return "allow"
         return "deny"
-    # 容器内隔离即沙箱：除 deny 外全放行（忽略 ask 规则）
-    if env == "container":
-        return "allow"
-    # 安全扫描器：无 engagement 时 host 上 deny（fail-safe）；有 engagement 时放行——
-    # Bash 工具会把它路由进该 engagement 的 egress 锁定沙箱（见 shell.py）。
+    # 安全扫描器：所有环境都要求 engagement；有授权时 Bash 工具会把它路由进
+    # engagement egress 沙箱，而非普通 Agent runtime。
     if tool_name in _BASH_TOOLS and _first_program(subject or "") in _HOST_DENIED_TOOLS:
         return "allow" if engaged else "deny"
+    # 普通容器内操作：除 deny 外放行（忽略 ask 规则）
+    if env == "container":
+        return "allow"
     if mode == "acceptEdits" and tool_name in _EDIT_TOOLS:
         return "allow"
     if _match(tool_name, subject, rules.ask):
         return "ask"
+    if _match(tool_name, subject, rules.allow):
+        return "allow"
     # 未知 Bash 命令没有足够证据判定为只读：host 上默认询问，避免新增/别名命令
     # 绕过风险列表。其它工具仍按其独立契约默认放行。
     if tool_name in _BASH_TOOLS:

@@ -50,6 +50,16 @@ async def lifespan(_app: FastAPI):
     from harness.infra.logging import log
     from harness.tools.mcp import init_mcp_tools, shutdown_mcp
 
+    # 单进程服务重启后，不存在仍在执行的旧 invocation；释放崩溃遗留租约。
+    try:
+        from harness.core.runtime_resolver import release_stale_leases
+
+        released = await release_stale_leases()
+        if released:
+            log.info("runtime.stale_leases_released", count=released)
+    except Exception as exc:  # noqa: BLE001 -- 租约清理失败不阻断基础对话启动
+        log.warning("runtime.stale_lease_cleanup_failed", error=str(exc)[:160])
+
     try:
         workspace = await asyncio.to_thread(ensure_workspace)
         log.info("workspace.ready", root=str(workspace))

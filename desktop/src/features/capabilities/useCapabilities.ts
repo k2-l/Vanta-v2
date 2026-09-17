@@ -3,13 +3,14 @@
  *
  * 单来源失败不清空整页：用 allSettled 收集，成功的照常呈现，失败的记入
  * `failed`，页面据此给出降级提示；五类全部失败才视为整页错误（规范 §7）。
- * 只读列表，写侧/生命周期操作不在此暴露。
+ * 此 hook 只负责目录读取；容器写侧和生命周期由 features/containers 独立封装。
  */
 
 import { useQuery } from "@tanstack/react-query";
 import { ipc } from "@/ipc/client";
 import { useConnection } from "@/stores/connection";
 import type { ApiOperation } from "@/contracts/ipc";
+import type { ContainerWire } from "@/contracts/containers";
 import {
   agentToItem,
   containerToItem,
@@ -19,7 +20,6 @@ import {
   type AgentWire,
   type CapabilityItem,
   type CapabilityKind,
-  type ContainerWire,
   type KnowledgeWire,
   type McpServerWire,
   type SkillWire,
@@ -27,6 +27,7 @@ import {
 
 type CatalogResult = {
   items: CapabilityItem[];
+  containers: ContainerWire[];
   /** 拉取失败的来源类别（部分降级时非空）。 */
   failed: CapabilityKind[];
 };
@@ -63,10 +64,12 @@ export function useCapabilities() {
         SOURCES.map((s) => ipc("api_request", { connectionId: connectionId!, operation: s.op })),
       );
       const items: CapabilityItem[] = [];
+      let containers: ContainerWire[] = [];
       const failed: CapabilityKind[] = [];
       settled.forEach((res, i) => {
         const src = SOURCES[i];
         if (res.status === "fulfilled" && Array.isArray(res.value)) {
+          if (src.kind === "runtime") containers = res.value as ContainerWire[];
           for (const row of res.value) items.push(src.map(row as never));
         } else {
           failed.push(src.kind);
@@ -77,7 +80,7 @@ export function useCapabilities() {
         const first = settled.find((r) => r.status === "rejected");
         throw first && first.status === "rejected" ? first.reason : new Error("能力目录加载失败");
       }
-      return { items, failed };
+      return { items, containers, failed };
     },
   });
 }

@@ -126,12 +126,51 @@ pub enum ApiOperation {
     CapabilitiesKnowledge,
     #[serde(rename = "capabilities.containers")]
     CapabilitiesContainers,
+    #[serde(rename = "containers.create")]
+    ContainersCreate { input: serde_json::Value },
+    #[serde(rename = "containers.start")]
+    ContainersStart {
+        #[serde(rename = "containerId")]
+        container_id: String,
+    },
+    #[serde(rename = "containers.stop")]
+    ContainersStop {
+        #[serde(rename = "containerId")]
+        container_id: String,
+    },
+    #[serde(rename = "containers.delete")]
+    ContainersDelete {
+        #[serde(rename = "containerId")]
+        container_id: String,
+    },
+    #[serde(rename = "containers.profile.get")]
+    ContainersProfileGet {
+        #[serde(rename = "containerId")]
+        container_id: String,
+    },
+    #[serde(rename = "containers.profile.put")]
+    ContainersProfilePut {
+        #[serde(rename = "containerId")]
+        container_id: String,
+        input: serde_json::Value,
+    },
+    #[serde(rename = "containers.profile.delete")]
+    ContainersProfileDelete {
+        #[serde(rename = "containerId")]
+        container_id: String,
+    },
+    #[serde(rename = "containers.readiness")]
+    ContainersReadiness {
+        #[serde(rename = "containerId")]
+        container_id: String,
+    },
 }
 
 #[derive(Clone, Copy)]
 enum Method {
     Get,
     Post,
+    Put,
     Patch,
     Delete,
 }
@@ -149,6 +188,17 @@ impl ApiOperation {
         // 压缩预览会调用摘要模型，不能沿用普通 CRUD 的 30 秒总超时。
         if matches!(self, ApiOperation::SessionsCompressPreview { .. }) {
             Duration::from_secs(120)
+        } else if matches!(self, ApiOperation::ContainersCreate { .. }) {
+            Duration::from_secs(150)
+        } else if matches!(
+            self,
+            ApiOperation::ContainersStart { .. }
+                | ApiOperation::ContainersStop { .. }
+                | ApiOperation::ContainersDelete { .. }
+                | ApiOperation::ContainersReadiness { .. }
+                | ApiOperation::ContainersProfilePut { .. }
+        ) {
+            Duration::from_secs(45)
         } else {
             Duration::from_secs(30)
         }
@@ -304,6 +354,75 @@ impl ApiOperation {
             ApiOperation::CapabilitiesContainers => Resolved {
                 method: Method::Get,
                 path: "/v1/containers".into(),
+                body: None,
+                auth: true,
+            },
+            ApiOperation::ContainersCreate { input } => Resolved {
+                method: Method::Post,
+                path: "/v1/containers".into(),
+                body: Some(input.clone()),
+                auth: true,
+            },
+            ApiOperation::ContainersStart { container_id } => Resolved {
+                method: Method::Patch,
+                path: format!(
+                    "/v1/containers/{}/start",
+                    encode_query_component(container_id)
+                ),
+                body: None,
+                auth: true,
+            },
+            ApiOperation::ContainersStop { container_id } => Resolved {
+                method: Method::Patch,
+                path: format!(
+                    "/v1/containers/{}/stop",
+                    encode_query_component(container_id)
+                ),
+                body: None,
+                auth: true,
+            },
+            ApiOperation::ContainersDelete { container_id } => Resolved {
+                method: Method::Delete,
+                path: format!("/v1/containers/{}", encode_query_component(container_id)),
+                body: None,
+                auth: true,
+            },
+            ApiOperation::ContainersProfileGet { container_id } => Resolved {
+                method: Method::Get,
+                path: format!(
+                    "/v1/containers/{}/profile",
+                    encode_query_component(container_id)
+                ),
+                body: None,
+                auth: true,
+            },
+            ApiOperation::ContainersProfilePut {
+                container_id,
+                input,
+            } => Resolved {
+                method: Method::Put,
+                path: format!(
+                    "/v1/containers/{}/profile",
+                    encode_query_component(container_id)
+                ),
+                body: Some(input.clone()),
+                auth: true,
+            },
+            ApiOperation::ContainersProfileDelete { container_id } => Resolved {
+                method: Method::Delete,
+                path: format!(
+                    "/v1/containers/{}/profile",
+                    encode_query_component(container_id)
+                ),
+                body: None,
+                auth: true,
+            },
+            ApiOperation::ContainersReadiness { container_id } => Resolved {
+                method: Method::Get,
+                path: format!(
+                    "/v1/containers/{}/readiness",
+                    encode_query_component(container_id)
+                ),
                 body: None,
                 auth: true,
             },
@@ -552,6 +671,7 @@ pub async fn request(
         let mut builder = match resolved.method {
             Method::Get => c.get(&url),
             Method::Post => c.post(&url),
+            Method::Put => c.put(&url),
             Method::Patch => c.patch(&url),
             Method::Delete => c.delete(&url),
         };
@@ -571,7 +691,18 @@ pub async fn request(
     };
     let status = resp.status();
     if !status.is_success() {
-        return Err(map_status(status));
+        let request_id = resp
+            .headers()
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let body = resp.json::<serde_json::Value>().await.ok();
+        let mut error = map_status(status);
+        if let Some(message) = body.as_ref().and_then(backend_error_message) {
+            error.message = message;
+        }
+        error.request_id = request_id;
+        return Err(error);
     }
     if status.as_u16() == 204 {
         return Ok(serde_json::Value::Null);
@@ -595,9 +726,50 @@ pub(crate) fn map_status(status: reqwest::StatusCode) -> ClientError {
     ClientError::new(kind, format!("后端返回 {code}"), retryable).with_code(code.to_string())
 }
 
+/// Extract FastAPI's safe validation/detail message without reflecting request input
+/// (which may contain container environment secrets) back into the WebView.
+fn backend_error_message(body: &serde_json::Value) -> Option<String> {
+    let detail = body.get("detail")?;
+    let message = match detail {
+        serde_json::Value::String(value) => value.trim().to_owned(),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .filter_map(|item| {
+                let message = item.get("msg")?.as_str()?.trim();
+                if message.is_empty() {
+                    return None;
+                }
+                let location = item
+                    .get("loc")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|parts| {
+                        parts
+                            .iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join(".")
+                    })
+                    .filter(|value| !value.is_empty());
+                Some(match location {
+                    Some(location) => format!("{location}: {message}"),
+                    None => message.to_owned(),
+                })
+            })
+            .take(3)
+            .collect::<Vec<_>>()
+            .join("；"),
+        _ => String::new(),
+    };
+    if message.is_empty() {
+        None
+    } else {
+        Some(message.chars().take(500).collect())
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{validate_api_version, ApiOperation};
+    use super::{backend_error_message, validate_api_version, ApiOperation};
     use serde_json::{json, Value};
 
     #[test]
@@ -678,6 +850,77 @@ mod tests {
         let resolved = delete.resolve();
         assert!(matches!(resolved.method, super::Method::Delete));
         assert_eq!(resolved.body, None);
+    }
+
+    #[test]
+    fn container_operations_are_allowlisted_with_fixed_paths() {
+        let create_body = json!({
+            "name": "java-runtime",
+            "image": "example/java:17",
+            "ports": [],
+            "env_vars": [],
+            "command": ["sleep", "infinity"],
+            "network_mode": "none",
+            "working_dir": "/workspace"
+        });
+        let create: ApiOperation = serde_json::from_value(json!({
+            "op": "containers.create",
+            "input": create_body.clone()
+        }))
+        .unwrap();
+        let resolved = create.resolve();
+        assert!(matches!(resolved.method, super::Method::Post));
+        assert_eq!(resolved.path, "/v1/containers");
+        assert_eq!(resolved.body, Some(create_body));
+
+        let profile_body = json!({
+            "capabilities": ["jdk17"],
+            "purpose": "java-audit",
+            "workspace_mode": "read-only",
+            "network_policy": "none",
+            "default_workdir": "/workspace",
+            "agent_allowlist": ["java-auditor"],
+            "max_concurrency": 1,
+            "agent_ready": true
+        });
+        let profile: ApiOperation = serde_json::from_value(json!({
+            "op": "containers.profile.put",
+            "containerId": "record/1",
+            "input": profile_body.clone()
+        }))
+        .unwrap();
+        let resolved = profile.resolve();
+        assert!(matches!(resolved.method, super::Method::Put));
+        assert_eq!(resolved.path, "/v1/containers/record%2F1/profile");
+        assert_eq!(resolved.body, Some(profile_body));
+
+        let readiness: ApiOperation = serde_json::from_value(json!({
+            "op": "containers.readiness",
+            "containerId": "record/1"
+        }))
+        .unwrap();
+        assert_eq!(
+            readiness.resolve().path,
+            "/v1/containers/record%2F1/readiness"
+        );
+    }
+
+    #[test]
+    fn backend_errors_expose_detail_without_reflecting_request_input() {
+        assert_eq!(
+            backend_error_message(&json!({ "detail": "Profile 声明禁网，但容器实际网络模式不是 none" })),
+            Some("Profile 声明禁网，但容器实际网络模式不是 none".into())
+        );
+        assert_eq!(
+            backend_error_message(&json!({
+                "detail": [{
+                    "loc": ["body", "max_concurrency"],
+                    "msg": "Input should be greater than or equal to 1",
+                    "input": "sensitive-value"
+                }]
+            })),
+            Some("body.max_concurrency: Input should be greater than or equal to 1".into())
+        );
     }
 
     #[test]

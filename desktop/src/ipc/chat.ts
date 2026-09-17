@@ -1,8 +1,7 @@
 import type { ChatStreamPacket } from "@/contracts/chat";
 import type { StreamHandle } from "@/contracts/ipc";
 import { toClientError } from "@/contracts/errors";
-import { isTauri } from "./client";
-import { mockStartChat } from "./mock";
+import { requireTauri } from "./client";
 
 export type StartChatArgs = {
   connectionId: string;
@@ -17,7 +16,7 @@ export async function startChat(
   onEvent: (packet: ChatStreamPacket) => void,
 ): Promise<StreamHandle> {
   try {
-    if (!isTauri()) return await mockStartChat(args, onEvent);
+    requireTauri();
     const { Channel, invoke } = await import("@tauri-apps/api/core");
     const channel = new Channel<ChatStreamPacket>();
     channel.onmessage = onEvent;

@@ -30,7 +30,7 @@ export default defineConfig({
       ignored: ["**/src-tauri/**"],
     },
   },
-  // 生产构建：Tauri 使用 dist/，浏览器兜底 target 用现代 ES。
+  // Tauri WebView 使用 dist/；目标统一为现代 ES。
   build: {
     target: "es2022",
     sourcemap: !!process.env.TAURI_DEBUG,

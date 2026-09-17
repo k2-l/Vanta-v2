@@ -12,6 +12,7 @@ import type {
   ConnectionSession,
   HealthResult,
 } from "./connection";
+import type { ContainerProfileInput, CreateContainerInput } from "./containers";
 
 /** 命令名 allowlist——与 Rust `#[tauri::command]` 一一对应，也是 TS 侧唯一入口。 */
 export const IPC = {
@@ -62,7 +63,15 @@ export type ApiOperation =
   | { op: "capabilities.skills" }
   | { op: "capabilities.mcp" }
   | { op: "capabilities.knowledge" }
-  | { op: "capabilities.containers" };
+  | { op: "capabilities.containers" }
+  | { op: "containers.create"; input: CreateContainerInput }
+  | { op: "containers.start"; containerId: string }
+  | { op: "containers.stop"; containerId: string }
+  | { op: "containers.delete"; containerId: string }
+  | { op: "containers.profile.get"; containerId: string }
+  | { op: "containers.profile.put"; containerId: string; input: ContainerProfileInput }
+  | { op: "containers.profile.delete"; containerId: string }
+  | { op: "containers.readiness"; containerId: string };
 
 /** 流句柄——chat_start / run_subscribe 返回，用于 stream_stop。 */
 export type StreamHandle = {

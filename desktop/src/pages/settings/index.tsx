@@ -15,7 +15,7 @@ import { ConnectionManager } from "@/features/connection/ConnectionManager";
 import { useUi, type ThemePref } from "@/stores/ui";
 import { useConnection } from "@/stores/connection";
 import { useLogout } from "@/features/connection/useActivate";
-import { ipc, isTauri } from "@/ipc/client";
+import { ipc } from "@/ipc/client";
 import { toClientError } from "@/contracts/errors";
 
 type SectionId =
@@ -59,10 +59,7 @@ export function SettingsPage() {
 
   return (
     <ModuleLayout module="settings" rail={rail}>
-      <ContentHeader
-        title={meta.label}
-        subtitle={isTauri() ? undefined : "浏览器 mock 模式 · 连接与凭据为内存假数据"}
-      />
+      <ContentHeader title={meta.label} />
       <div className="min-h-0 flex-1 overflow-y-auto p-6">
         <div className="mx-auto max-w-2xl">
           {active === "connection" && <ConnectionSection />}

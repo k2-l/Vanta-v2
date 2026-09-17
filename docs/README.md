@@ -36,6 +36,7 @@ Vanta 的能力面沿两套正交协议组织。搞清一个能力属于哪套�
 | **Tool** | 工具接入 | 实现 `Tool` 基类 + `@register` | [tool.md](./tool.md) |
 | **MCP** | 工具接入 | 写 `[[mcp.servers]]` 配置 或 REST 挂载，零代码 | [mcp.md](./mcp.md) |
 | **Plugin** | 工具接入 | 放 `plugins/<name>/__init__.py` 暴露 `get_tools()` | [plugin.md](./plugin.md) |
+| **Agent Runtime** | 编排运行时 | Container Profile + RuntimeResolver 自动选择/租用 | [container-runtime.md](./container-runtime.md) |
 
 ## 关键源码入口
 

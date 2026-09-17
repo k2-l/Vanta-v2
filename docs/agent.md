@@ -54,12 +54,19 @@ user-invocable: true
 {
   "name": "audit-analyst",     // 必填：目标 agent 名（须 active）
   "task": "分析 UserController 的 SQL 注入可利用性",  // 必填：任务描述
-  "context": "上游扫描发现的可疑点：……"  // 可选：串行依赖时传上游输出
+  "context": "上游扫描发现的可疑点：……", // 可选：串行依赖时传上游输出
+  "runtime_requirements": {     // 可选：存在时由后端自动选择容器
+    "capabilities": ["jdk17", "semgrep"],
+    "network": "none",
+    "workspace": "read-only"
+  }
 }
 ```
 
 - **同一轮多个 `Agent` 调用并行执行**；需要串行时用 `context` 把前一个结果喂给后一个。
 - 只能派 **active（已启动）** 的 agent。
+- `runtime_requirements` 不属于 `AGENT.md` 文件协议；它是单次 invocation 的调度参数。
+  省略时继承父执行环境，提供时必须匹配 Container Profile，失败不回退本机。
 - 见 `harness/tools/builtin/orchestration/run_agent.py`。
 
 ## 子图与主图的区别

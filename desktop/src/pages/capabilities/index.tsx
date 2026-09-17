@@ -1,5 +1,5 @@
-import { useMemo } from "react";
-import { Layers } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Layers, Plus, Settings2 } from "lucide-react";
 import {
   ModuleLayout,
   ContextRail,
@@ -23,6 +23,11 @@ import {
   type CapabilityItem,
   type CapabilityKind,
 } from "@/features/capabilities/model";
+import type { ContainerWire } from "@/contracts/containers";
+import {
+  CreateContainerDialog,
+  ManageContainerDialog,
+} from "@/features/containers/ContainerRuntimeDialogs";
 
 const KINDS = Object.keys(CAPABILITY_KIND) as CapabilityKind[];
 
@@ -31,9 +36,14 @@ export function CapabilitiesPage() {
   const setFilter = useUi((s) => s.setFilter);
   const connected = useConnection((s) => Boolean(s.activeConnectionId && s.auth.authenticated));
   const offline = useConnection((s) => s.status === "offline");
+  const [containerDialog, setContainerDialog] = useState<"create" | ContainerWire | null>(null);
 
   const query = useCapabilities();
   const all = query.data?.items ?? [];
+  const containers = query.data?.containers ?? [];
+  const activeContainer = containerDialog && containerDialog !== "create"
+    ? containers.find((item) => item.id === containerDialog.id) ?? containerDialog
+    : null;
   const failed = query.data?.failed ?? [];
   const lastSync = query.dataUpdatedAt ? new Date(query.dataUpdatedAt).toISOString() : undefined;
 
@@ -80,9 +90,17 @@ export function CapabilitiesPage() {
       title="能力"
       subtitle="只呈现后端已声明或本机确实可用的能力，可用状态来自运行时事实（规范 §4.5）"
       actions={
-        <span className="text-[11px]" style={{ color: "var(--fg-subtle)" }}>
-          {connected && query.isSuccess ? `共 ${all.length} 项` : null}
-        </span>
+        <>
+          {connected && kindFilter === "runtime" && (
+            <Button size="xs" onClick={() => setContainerDialog("create")}>
+              <Plus size={13} />
+              创建容器
+            </Button>
+          )}
+          <span className="text-[11px]" style={{ color: "var(--fg-subtle)" }}>
+            {connected && query.isSuccess ? `共 ${all.length} 项` : null}
+          </span>
+        </>
       }
     />
   );
@@ -138,7 +156,19 @@ export function CapabilitiesPage() {
               </div>
               <div className="flex flex-col gap-2">
                 {list.map((cap) => (
-                  <CapabilityRow key={cap.id} cap={cap} lastSync={lastSync} />
+                  <CapabilityRow
+                    key={cap.id}
+                    cap={cap}
+                    lastSync={lastSync}
+                    onManage={
+                      cap.kind === "runtime"
+                        ? () => {
+                            const container = containers.find((item) => `runtime:${item.id}` === cap.id);
+                            if (container) setContainerDialog(container);
+                          }
+                        : undefined
+                    }
+                  />
                 ))}
               </div>
             </section>
@@ -149,14 +179,25 @@ export function CapabilitiesPage() {
   };
 
   return (
-    <ModuleLayout module="capabilities" rail={rail}>
-      {header}
-      {body()}
-    </ModuleLayout>
+    <>
+      <ModuleLayout module="capabilities" rail={rail}>
+        {header}
+        {body()}
+      </ModuleLayout>
+      {containerDialog === "create" && (
+        <CreateContainerDialog
+          onClose={() => setContainerDialog(null)}
+          onCreated={(container) => setContainerDialog(container)}
+        />
+      )}
+      {activeContainer && (
+        <ManageContainerDialog container={activeContainer} onClose={() => setContainerDialog(null)} />
+      )}
+    </>
   );
 }
 
-function CapabilityRow({ cap, lastSync }: { cap: CapabilityItem; lastSync?: string }) {
+function CapabilityRow({ cap, lastSync, onManage }: { cap: CapabilityItem; lastSync?: string; onManage?: () => void }) {
   const Icon = CAPABILITY_KIND[cap.kind].icon;
   const avail = AVAILABILITY[cap.availability];
   return (
@@ -175,7 +216,14 @@ function CapabilityRow({ cap, lastSync }: { cap: CapabilityItem; lastSync?: stri
           <p className="truncate text-[13px] font-medium" style={{ color: "var(--fg)" }}>
             {cap.name}
           </p>
-          <StatusBadge tone={avail.tone}>{avail.label}</StatusBadge>
+          <span className="flex shrink-0 items-center gap-2">
+            <StatusBadge tone={avail.tone}>{avail.label}</StatusBadge>
+            {onManage && (
+              <Button size="xs" variant="secondary" onClick={onManage}>
+                <Settings2 size={12} />管理
+              </Button>
+            )}
+          </span>
         </div>
         <p className="mt-0.5 text-[12px]" style={{ color: "var(--fg-muted)" }}>
           {cap.detail}

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shlex
 from dataclasses import dataclass
 
 from harness.infra.logging import log
@@ -28,6 +29,12 @@ class ExecResult:
     exit_code: int
     stdout: str
     stderr: str
+
+
+@dataclass
+class RuntimeReadiness:
+    ready: bool
+    reason: str
 
 
 async def _podman(*args: str, stdin: str | None = None, timeout: float = 30) -> tuple[int, str, str]:  # noqa: ASYNC109 — 子进程超时透传，与 security/sandbox.py 同款
@@ -65,6 +72,62 @@ async def ping() -> bool:
     return rc == 0
 
 
+async def is_running(container_id: str) -> bool:
+    """Return the daemon's live running state instead of trusting stored metadata."""
+    if not container_id:
+        return False
+    rc, out, _err = await _podman(
+        "inspect", "--format", "{{.State.Running}}", container_id, timeout=10
+    )
+    return rc == 0 and out.strip().lower() == "true"
+
+
+async def network_mode(container_id: str) -> str:
+    """Return the live Podman network mode (for example ``none`` or ``bridge``)."""
+    if not container_id:
+        return ""
+    rc, out, _err = await _podman(
+        "inspect", "--format", "{{.HostConfig.NetworkMode}}", container_id, timeout=10
+    )
+    return out.strip().lower() if rc == 0 else ""
+
+
+async def probe_agent_runtime(
+    container_id: str,
+    *,
+    working_dir: str = "",
+    require_write: bool = False,
+    expected_network_policy: str = "",
+) -> RuntimeReadiness:
+    """Check the minimum command/file contract required by Agent builtin tools.
+
+    Capability tags such as ``jdk17`` remain administrator-declared metadata.  This
+    probe verifies the common transport contract and the configured workspace only.
+    """
+    if not await is_running(container_id):
+        return RuntimeReadiness(False, "容器未运行或 daemon 不可达")
+    if expected_network_policy == "engagement-scope":
+        return RuntimeReadiness(False, "engagement-scope 仅允许使用受控 engagement 沙箱")
+    if expected_network_policy in {"none", "internet"}:
+        live_network = await network_mode(container_id)
+        if expected_network_policy == "none" and live_network != "none":
+            return RuntimeReadiness(False, "Profile 声明禁网，但容器实际网络模式不是 none")
+        if expected_network_policy == "internet" and live_network in {"", "none"}:
+            return RuntimeReadiness(False, "Profile 声明联网，但容器实际没有可用网络")
+
+    checks = ["command -v sh", "command -v cat", "command -v tee", "command -v grep", "command -v find"]
+    if working_dir:
+        quoted = shlex.quote(working_dir)
+        checks.append(f"test -d {quoted}")
+        if require_write:
+            checks.append(f"test -w {quoted}")
+    res = await exec(container_id, ["sh", "-c", " && ".join(checks)], timeout=20)
+    if res.exit_code != 0:
+        detail = (res.stderr or res.stdout or f"exit {res.exit_code}").strip()[:200]
+        return RuntimeReadiness(False, f"Agent runtime 探针失败：{detail}")
+    return RuntimeReadiness(True, "ready")
+
+
 async def list_containers() -> list[ContainerSummary]:
     """列出所有容器（含已停）—— `podman ps -a`，解析 JSON。daemon 不可达则抛 RuntimeError。"""
     rc, out, err = await _podman("ps", "-a", "--format", "json", timeout=15)
@@ -84,10 +147,18 @@ async def list_containers() -> list[ContainerSummary]:
 
 
 async def create_container(
-    name: str, image: str, ports: list[str], env_vars: list[str], command: list[str] | None = None
+    name: str,
+    image: str,
+    ports: list[str],
+    env_vars: list[str],
+    command: list[str] | None = None,
+    *,
+    network_mode: str = "bridge",
+    working_dir: str = "",
 ) -> str:
-    """`podman create`（不启动）：`-t -i` 常驻以支持后续 exec（等价 docker run -dit），端口/env 映射。
+    """`podman create`（不启动）：保留 TTY/stdin，配置端口、环境、网络和工作目录。
 
+    容器是否常驻由镜像 CMD 或显式 command 决定；Agent runtime 应使用长期运行命令。
     返回 podman 容器 ID。同名冲突直接报错，绝不删除非本次请求创建的容器。
     """
     argv = ["create", "-t", "-i"]
@@ -97,6 +168,10 @@ async def create_container(
         argv += ["-p", p]
     for e in env_vars:
         argv += ["-e", e]
+    if network_mode:
+        argv += ["--network", network_mode]
+    if working_dir:
+        argv += ["--workdir", working_dir]
     argv.append(image)
     if command:
         argv += command

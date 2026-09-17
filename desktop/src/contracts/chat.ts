@@ -21,5 +21,8 @@ export type CompressPreview = {
   tokens_after: number;
 };
 
+/** 兼容本地压缩控件的旧类型名。 */
+export type CompactionPreview = CompressPreview;
+
 /** 后端 SSE 经 Rust Core 解析后，通过有序 Tauri Channel 送达的帧。 */
 export type { StreamPacket as ChatStreamPacket } from "./stream";

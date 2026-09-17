@@ -12,6 +12,7 @@
 
 import { Boxes, BookOpen, Cpu, Plug, Wrench, type LucideIcon } from "lucide-react";
 import type { Tone } from "@/components/desktop/status";
+import type { ContainerWire } from "@/contracts/containers";
 
 export type CapabilityKind = "agent" | "skill" | "mcp" | "knowledge" | "runtime";
 
@@ -87,15 +88,6 @@ export type KnowledgeWire = {
   category?: string;
   content?: string;
   tags?: string[];
-};
-
-export type ContainerWire = {
-  id: string;
-  name: string;
-  image?: string;
-  status?: string; // running | exited | created | paused | ...
-  managed?: boolean;
-  container_id?: string | null;
 };
 
 // ─── 归一化：wire → CapabilityItem（可用性来自运行时事实） ──────────────

@@ -1,8 +1,9 @@
 [anthropic]
 base_url = "https://api.deepseek.com/anthropic"
+# api_key 只通过 ANTHROPIC_API_KEY 环境变量提供，禁止写入本文件（本文件受 git 跟踪）。
 
 [server]
-host      = "127.0.0.1"
+host      = "0.0.0.0"
 port      = 8765
 log_level = "INFO"
 cors_origins = [

@@ -21,7 +21,7 @@
 | 技能管理 `/v1/skills/*` | Skill 的 CRUD、Markdown 注册、依赖树、向量重建索引 |
 | Agent 管理 `/v1/agents/*` | Agent 的 CRUD、Markdown 注册、provider 归一化 |
 | 知识库管理 `/v1/knowledge/*` | 知识条目 CRUD、Markdown 注册、目录扫描导入、Qdrant 重建索引 |
-| 容器管理 `/v1/containers/*` | 直连 Podman 的容器创建/启停/删除/exec，合并 live 容器与库元数据 |
+| 容器管理 `/v1/containers/*` | 直连 Podman 的容器创建/启停/删除/exec；Profile/readiness 管理 Agent runtime 自动选择能力 |
 | 结果看板 `GET /v1/artifacts` | 操作者视角只读查看跨 engagement 的产物（secret 不回明文） |
 | MCP Server 管理 `/v1/mcp/servers/*` | 可视化增删/测试外部 MCP server，二次确认写门槛，env 脱敏（只回 key 名），热挂载/卸载 |
 | 实时推送 `WS /ws/chat/{session_id}` | WebSocket 订阅会话 task 状态事件（JWT 校验） |
@@ -32,6 +32,7 @@
 |---|---|
 | AgentRuntime（LangGraph 引擎） | `preprocess→agent→tools→recovery` 状态图，把 `astream_events` 映射为 Harness SSE 事件 |
 | 子 Agent 编排（`subagent/`） | `run_sub_agent` 独立执行子 Agent，支持同轮并行；深度限制、委派循环检测、并发信号量门控 |
+| Agent Runtime Resolver | 按 invocation 的能力/网络/工作区需求选择容器，readiness 探测、租约并发控制、失败不回退本机 |
 | 上下文构建（L1/L2/L3） | L1 注入 agent/skill 清单，L2 按需加载 SOP/system prompt，L3 渐进披露附带文件 |
 | 上下文压缩 / 摘要 | rolling summary 背景注入 + 用户主动结构化压缩（新覆盖旧淘汰过期信息） |
 | Token 预算与用量成本 | 会话/每日/主 Agent/子 Agent 预算门控，按模型价格表估算每轮与会话成本 |
@@ -57,7 +58,7 @@
 | `finding` | 记录/列出/分诊安全发现（严重度、证据、修复、FP） |
 | `board` | 多 Agent 共享结果看板产物读写（按 engagement L1 隔离） |
 | `report` | 从 findings 生成结构化 Markdown 渗透测试报告 |
-| `Agent`·`load_agent`·`Skill`·`tool_search` | 派发子 Agent、加载 Agent/Skill 定义、按需检索并解锁动态工具池 |
+| `Agent`·`load_agent`·`Skill`·`tool_search`·`runtime_catalog` | 派发子 Agent、加载定义、检索动态工具，以及查询安全的 Agent runtime 能力目录 |
 
 **工具基础设施：**
 

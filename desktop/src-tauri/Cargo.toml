@@ -1,7 +1,7 @@
 [package]
 name = "vanta-desktop"
-version = "0.0.0"
-description = "Vanta 桌面瘦客户端（Tauri Core）"
+version = "0.1.0"
+description = "Vanta 客户端（Tauri Core）"
 authors = ["Vanta"]
 edition = "2021"
 rust-version = "1.77"

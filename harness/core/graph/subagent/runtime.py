@@ -29,6 +29,7 @@ async def run_sub_agent(
     invocation_id: str,
     parent_invocation_id: str,
     lineage: tuple[str, ...],
+    execution_env: str | None = None,
 ) -> str:
     """执行子 agent，返回最终文本输出。
 
@@ -42,9 +43,12 @@ async def run_sub_agent(
         )
     compiled = build_sub_graph(agent, depth)
 
-    # 继承父 agent 的执行环境
-    env = get_exec_env()
-    exec_env_str = f"container:{env.container_id}" if env.is_container else "local"
+    # Resolver 可为当前 invocation 显式绑定容器；未指定时保持原有父环境继承语义。
+    if execution_env is None:
+        env = get_exec_env()
+        exec_env_str = f"container:{env.container_id}" if env.is_container else "local"
+    else:
+        exec_env_str = execution_env
 
     # 把上下文拼入任务描述（让子 agent 直接看到前置结果）
     user_content = task

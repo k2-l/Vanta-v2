@@ -39,6 +39,8 @@ class RunAgentTool(Tool):
         "- 同一轮次多个 Agent 调用会**并行**执行\n"
         "- 需要串行时（后续任务依赖前一个结果），把前一个结果通过 context 参数传入\n"
         "- 主代理和子代理均可委派；每个 invocation 最多同时运行 3 个直接子 Agent，最大深度 3\n"
+        "- 任务需要专用环境时，通过 runtime_requirements 声明能力，由后端选择并租用容器；"
+        "找不到匹配环境时不会回退本机\n"
         "- 只能调用已启动（active=true）的 Agent"
     )
     input_schema: dict[str, Any] = {
@@ -56,6 +58,32 @@ class RunAgentTool(Tool):
                 "type": "string",
                 "description": "上游 agent 的输出（串行依赖时传入），默认为空",
             },
+            "runtime_requirements": {
+                "type": "object",
+                "description": (
+                    "可选。存在时为本次子 Agent 自动选择隔离容器；省略则继承父执行环境。"
+                ),
+                "properties": {
+                    "capabilities": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "所需能力标签，如 jdk17、semgrep、sqlmap",
+                    },
+                    "network": {
+                        "type": "string",
+                        "enum": ["none", "internet"],
+                        "description": (
+                            "普通任务所需网络策略；主动扫描会由权限层另行路由到 engagement 沙箱"
+                        ),
+                    },
+                    "workspace": {
+                        "type": "string",
+                        "enum": ["none", "read-only", "read-write"],
+                        "description": "所需工作区挂载模式",
+                    },
+                },
+                "additionalProperties": False,
+            },
         },
         "required": ["name", "task"],
     }
@@ -65,7 +93,9 @@ class RunAgentTool(Tool):
         name: str,
         task: str,
         context: str = "",
+        runtime_requirements: dict[str, Any] | None = None,
     ) -> ToolResult:
+        from harness.core.runtime_resolver import RuntimeRequirements, RuntimeResolutionError
         from harness.infra.settings import get_settings
         from harness.providers import get_provider
 
@@ -73,6 +103,13 @@ class RunAgentTool(Tool):
         current_depth = current_sub_agent_depth()
         parent_id = current_invocation_id()
         lineage = current_agent_lineage()
+
+        requirements = None
+        if runtime_requirements is not None:
+            try:
+                requirements = RuntimeRequirements.from_input(runtime_requirements)
+            except RuntimeResolutionError as exc:
+                return ToolResult.fail(error=str(exc), error_code=exc.code)
 
         # ── 深度限制 ────────────────────────────────────────────────────
         if current_depth >= s.sub_agent_max_depth:
@@ -143,12 +180,19 @@ class RunAgentTool(Tool):
                 trace_id = ctx.get("trace", "")
 
                 try:
-                    orchestration = get_orchestration_context()
-                    with enter_agent_invocation(invocation_id, name):
-                        # 只对主代理直接派发的根子任务做全局并发门控；若父任务持有
-                        # permit 时嵌套子任务也抢同一 semaphore，会形成层级死锁。
-                        if orchestration is None or current_depth > 0:
-                            result_text = await run_sub_agent(
+                    async def invoke_sub_agent() -> str:
+                        from harness.core.runtime_resolver import release_runtime, resolve_runtime
+
+                        resolved = None
+                        try:
+                            if requirements is not None:
+                                resolved = await resolve_runtime(
+                                    agent_name=name,
+                                    requirements=requirements,
+                                    session_id=session_id,
+                                    invocation_id=invocation_id,
+                                )
+                            return await run_sub_agent(
                                 agent=agent,
                                 task=task,
                                 context=context,
@@ -158,20 +202,30 @@ class RunAgentTool(Tool):
                                 invocation_id=invocation_id,
                                 parent_invocation_id=parent_id,
                                 lineage=(*lineage, name),
+                                execution_env=(resolved.execution_env if resolved else None),
                             )
+                        finally:
+                            if resolved is not None:
+                                try:
+                                    await release_runtime(resolved.lease_id)
+                                except Exception as exc:  # noqa: BLE001 -- 不用清理故障覆盖任务结果
+                                    from harness.infra.logging import log
+
+                                    log.error(
+                                        "run_agent.runtime_release_failed",
+                                        lease_id=resolved.lease_id,
+                                        error=str(exc)[:200],
+                                    )
+
+                    orchestration = get_orchestration_context()
+                    with enter_agent_invocation(invocation_id, name):
+                        # 只对主代理直接派发的根子任务做全局并发门控；若父任务持有
+                        # permit 时嵌套子任务也抢同一 semaphore，会形成层级死锁。
+                        if orchestration is None or current_depth > 0:
+                            result_text = await invoke_sub_agent()
                         else:
                             async with orchestration.semaphore:
-                                result_text = await run_sub_agent(
-                                    agent=agent,
-                                    task=task,
-                                    context=context,
-                                    depth=new_depth,
-                                    session_id=session_id,
-                                    trace_id=trace_id,
-                                    invocation_id=invocation_id,
-                                    parent_invocation_id=parent_id,
-                                    lineage=(*lineage, name),
-                                )
+                                result_text = await invoke_sub_agent()
                     log.info(
                         "run_agent.done",
                         agent=name,
@@ -180,6 +234,14 @@ class RunAgentTool(Tool):
                         output_len=len(result_text),
                     )
                     return ToolResult(ok=True, output=result_text)
+                except RuntimeResolutionError as exc:
+                    log.warning(
+                        "run_agent.runtime_unavailable",
+                        agent=name,
+                        invocation_id=invocation_id,
+                        error=str(exc)[:300],
+                    )
+                    return ToolResult.fail(error=str(exc), error_code=exc.code)
                 except Exception as exc:  # noqa: BLE001
                     log.error(
                         "run_agent.error",
